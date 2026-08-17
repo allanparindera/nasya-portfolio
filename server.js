@@ -5,6 +5,8 @@ import ImageKit from 'imagekit';
 
 dotenv.config();
 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'nasya2026';
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -15,7 +17,20 @@ const imagekit = new ImageKit({
   urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
 });
 
+app.post('/api/verify', (req, res) => {
+  const { passcode } = req.body || {};
+  if (!passcode || passcode !== ADMIN_PASSWORD) {
+    return res.status(401).json({ success: false, error: 'Invalid passcode' });
+  }
+  return res.status(200).json({ success: true });
+});
+
 app.get('/api/auth', (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (!adminKey || adminKey !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized: Admin key required' });
+  }
+
   try {
     const authParams = imagekit.getAuthenticationParameters();
     res.json(authParams);
@@ -37,6 +52,11 @@ app.get('/api/files', async (req, res) => {
 });
 
 app.delete('/api/files', async (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (!adminKey || adminKey !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized: Admin key required' });
+  }
+
   try {
     const { fileId } = req.query;
     if (!fileId) return res.status(400).json({ error: 'fileId required' });

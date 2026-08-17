@@ -2,14 +2,16 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 
 const THEME_KEY = 'nasya-portfolio-theme';
 const ADMIN_KEY = 'nasya-portfolio-admin';
-const PASSCODE = 'nasya2026';
 const API_URL = import.meta.env.DEV ? 'http://localhost:3001/api' : '/api';
 const IK_URL = import.meta.env.VITE_IMAGEKIT_URL_ENDPOINT;
 const IK_PUB = import.meta.env.VITE_IMAGEKIT_PUBLIC_KEY;
 
 async function fetchAuth() {
-  const res = await fetch(`${API_URL}/auth`);
-  if (!res.ok) throw new Error('Auth failed');
+  const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
+  const res = await fetch(`${API_URL}/auth`, {
+    headers: { 'x-admin-key': passcode }
+  });
+  if (!res.ok) throw new Error('Auth failed (wrong passcode or session expired)');
   return res.json(); // { signature, expire, token }
 }
 
@@ -85,7 +87,11 @@ async function loadItems() {
 
 async function deleteItem(fileId) {
   try {
-    const res = await fetch(`${API_URL}/files?fileId=${fileId}`, { method: 'DELETE' });
+    const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
+    const res = await fetch(`${API_URL}/files?fileId=${fileId}`, {
+      method: 'DELETE',
+      headers: { 'x-admin-key': passcode }
+    });
     return res.ok;
   } catch { return false; }
 }
@@ -253,13 +259,13 @@ export default function App() {
   const tapCountRef = useRef(0);
   const tapTimerRef = useRef(null);
 
+  const [verifying, setVerifying] = useState(false);
+
   const handleAvatarTap = (e) => {
     if (isAdmin) {
-      // Already admin — allow avatar change
       avatarInputRef.current?.click();
       return;
     }
-    // Secret knock: 5 taps on avatar to open passcode modal
     tapCountRef.current += 1;
     clearTimeout(tapTimerRef.current);
     tapTimerRef.current = setTimeout(() => { tapCountRef.current = 0; }, 1500);
@@ -269,18 +275,30 @@ export default function App() {
     }
   };
 
-  const handlePasscodeSubmit = (e) => {
+  const handlePasscodeSubmit = async (e) => {
     e.preventDefault();
-    if (passcodeInput.toLowerCase() === PASSCODE) {
-      setIsAdmin(true);
-      sessionStorage.setItem(ADMIN_KEY, '1');
-      setShowPasscodeModal(false);
-      setPasscodeInput('');
-      setPasscodeError('');
-    } else {
-      setPasscodeError('Wrong passcode');
-      setPasscodeInput('');
+    if (!passcodeInput) return;
+    setVerifying(true);
+    setPasscodeError('');
+    try {
+      const res = await fetch(`${API_URL}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode: passcodeInput })
+      });
+      if (res.ok) {
+        setIsAdmin(true);
+        sessionStorage.setItem(ADMIN_KEY, passcodeInput);
+        setShowPasscodeModal(false);
+        setPasscodeInput('');
+      } else {
+        setPasscodeError('Passcode salah');
+        setPasscodeInput('');
+      }
+    } catch {
+      setPasscodeError('Gagal koneksi ke server');
     }
+    setVerifying(false);
   };
 
   const handleLogout = () => {
@@ -514,7 +532,9 @@ export default function App() {
               autoFocus
             />
             {passcodeError && <p className="passcode-error">{passcodeError}</p>}
-            <button type="submit">Enter</button>
+            <button type="submit" disabled={verifying}>
+              {verifying ? '...' : 'Enter'}
+            </button>
           </form>
         </div>
       )}

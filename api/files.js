@@ -1,5 +1,7 @@
 import ImageKit from 'imagekit';
 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'nasya2026';
+
 const imagekit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
   privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
@@ -9,7 +11,7 @@ const imagekit = new ImageKit({
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,x-admin-key');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method === 'GET') {
@@ -25,6 +27,11 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'DELETE') {
+    const adminKey = req.headers['x-admin-key'];
+    if (!adminKey || adminKey !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Unauthorized: Admin key required' });
+    }
+
     try {
       const { fileId } = req.query;
       if (!fileId) return res.status(400).json({ error: 'fileId required' });
