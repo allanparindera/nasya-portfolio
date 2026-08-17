@@ -14,7 +14,6 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "imagekit": "^5.2.0",
-    "imagekitio-react": "^4.2.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
