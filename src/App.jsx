@@ -31,6 +31,37 @@ async function uploadToImageKit(file, tag) {
   return res.json();
 }
 
+async function loadProfilePhoto() {
+  try {
+    const res = await fetch(`${API_URL}/files`);
+    if (!res.ok) return null;
+    const files = await res.json();
+    const profile = files.find(f => f.tags && f.tags.includes('profile'));
+    return profile ? { id: profile.fileId, url: profile.url } : null;
+  } catch { return null; }
+}
+
+async function uploadProfilePhoto(file) {
+  const auth = await fetchAuth();
+  const form = new FormData();
+  form.append('file', file);
+  form.append('fileName', 'profile-photo');
+  form.append('folder', '/portfolio');
+  form.append('tags', 'profile');
+  form.append('publicKey', IK_PUB);
+  form.append('signature', auth.signature);
+  form.append('expire', auth.expire);
+  form.append('token', auth.token);
+  form.append('useUniqueFileName', 'true');
+
+  const res = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) throw new Error('Upload failed');
+  return res.json();
+}
+
 async function loadItems() {
   try {
     const res = await fetch(`${API_URL}/files`);
@@ -200,6 +231,9 @@ function Card({ item, onDelete, onClick, index }) {
 
 export default function App() {
   const [items, setItems] = useState([]);
+  const [profilePhoto, setProfilePhoto] = useState(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const avatarInputRef = useRef();
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [tab, setTab] = useState('works');
@@ -208,8 +242,27 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark');
 
   useEffect(() => {
-    loadItems().then(data => { setItems(data); setLoading(false); });
+    Promise.all([loadItems(), loadProfilePhoto()]).then(([data, photo]) => {
+      // Filter out profile photo from gallery items if any
+      setItems(data.filter(i => i.type !== 'profile'));
+      if (photo) setProfilePhoto(photo);
+      setLoading(false);
+    });
   }, []);
+
+  const handleAvatarChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingAvatar(true);
+    try {
+      if (profilePhoto?.id) await deleteItem(profilePhoto.id);
+      const res = await uploadProfilePhoto(file);
+      setProfilePhoto({ id: res.fileId, url: res.url });
+    } catch (err) {
+      alert('Gagal ganti foto profil: ' + err.message);
+    }
+    setUploadingAvatar(false);
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -235,7 +288,17 @@ export default function App() {
       <header className="hero">
         <div className="container">
           <div className="hero-top">
-            <div className="avatar">NS</div>
+            <div className="avatar-wrapper" onClick={() => !uploadingAvatar && avatarInputRef.current?.click()} title="Ganti foto profil">
+              <input type="file" ref={avatarInputRef} style={{display:'none'}} accept="image/*" onChange={handleAvatarChange} />
+              {uploadingAvatar ? (
+                <div className="avatar"><svg className="spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg></div>
+              ) : profilePhoto ? (
+                <img src={profilePhoto.url} alt="Profile" className="avatar-img" />
+              ) : (
+                <div className="avatar">NS</div>
+              )}
+              <div className="avatar-overlay">📷</div>
+            </div>
             <div className="hero-details">
               <div className="title-row">
                 <h1>Nasya Safira Rahardja</h1>
