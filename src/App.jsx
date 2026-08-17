@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 const THEME_KEY = 'nasya-portfolio-theme';
+const ADMIN_KEY = 'nasya-portfolio-admin';
+const PASSCODE = 'nasya2026';
 const API_URL = import.meta.env.DEV ? 'http://localhost:3001/api' : '/api';
 const IK_URL = import.meta.env.VITE_IMAGEKIT_URL_ENDPOINT;
 const IK_PUB = import.meta.env.VITE_IMAGEKIT_PUBLIC_KEY;
@@ -184,7 +186,7 @@ function UploadZone({ onUploadComplete }) {
   );
 }
 
-function Card({ item, onDelete, onClick, index }) {
+function Card({ item, onDelete, onClick, index, isAdmin }) {
   const [deleting, setDeleting] = useState(false);
   return (
     <div className="card" style={{ animationDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
@@ -208,22 +210,24 @@ function Card({ item, onDelete, onClick, index }) {
           <span className="badge">{item.type}</span>
           <h3 className="card-title">{item.title}</h3>
         </div>
-        <button
-          className="delete-btn"
-          title="Hapus"
-          disabled={deleting}
-          onClick={async (e) => {
-            e.stopPropagation();
-            setDeleting(true);
-            await onDelete(item.id);
-          }}
-        >
-          {deleting ? '...' : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          )}
-        </button>
+        {isAdmin && (
+          <button
+            className="delete-btn"
+            title="Hapus"
+            disabled={deleting}
+            onClick={async (e) => {
+              e.stopPropagation();
+              setDeleting(true);
+              await onDelete(item.id);
+            }}
+          >
+            {deleting ? '...' : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -240,6 +244,50 @@ export default function App() {
   const [lightbox, setLightbox] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark');
+
+  // Admin mode
+  const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem(ADMIN_KEY) === '1');
+  const [showPasscodeModal, setShowPasscodeModal] = useState(false);
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [passcodeError, setPasscodeError] = useState('');
+  const tapCountRef = useRef(0);
+  const tapTimerRef = useRef(null);
+
+  const handleAvatarTap = (e) => {
+    if (isAdmin) {
+      // Already admin — allow avatar change
+      avatarInputRef.current?.click();
+      return;
+    }
+    // Secret knock: 5 taps on avatar to open passcode modal
+    tapCountRef.current += 1;
+    clearTimeout(tapTimerRef.current);
+    tapTimerRef.current = setTimeout(() => { tapCountRef.current = 0; }, 1500);
+    if (tapCountRef.current >= 5) {
+      tapCountRef.current = 0;
+      setShowPasscodeModal(true);
+    }
+  };
+
+  const handlePasscodeSubmit = (e) => {
+    e.preventDefault();
+    if (passcodeInput.toLowerCase() === PASSCODE) {
+      setIsAdmin(true);
+      sessionStorage.setItem(ADMIN_KEY, '1');
+      setShowPasscodeModal(false);
+      setPasscodeInput('');
+      setPasscodeError('');
+    } else {
+      setPasscodeError('Wrong passcode');
+      setPasscodeInput('');
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAdmin(false);
+    setShowUpload(false);
+    sessionStorage.removeItem(ADMIN_KEY);
+  };
 
   useEffect(() => {
     Promise.all([loadItems(), loadProfilePhoto()]).then(([data, photo]) => {
@@ -288,7 +336,7 @@ export default function App() {
       <header className="hero">
         <div className="container">
           <div className="hero-top">
-            <div className="avatar-wrapper" onClick={() => !uploadingAvatar && avatarInputRef.current?.click()} title="Ganti foto profil">
+            <div className="avatar-wrapper" onClick={handleAvatarTap} title={isAdmin ? "Ganti foto profil" : undefined} style={{ cursor: 'pointer' }}>
               <input type="file" ref={avatarInputRef} style={{display:'none'}} accept="image/*" onChange={handleAvatarChange} />
               {uploadingAvatar ? (
                 <div className="avatar"><svg className="spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg></div>
@@ -297,12 +345,17 @@ export default function App() {
               ) : (
                 <div className="avatar">NS</div>
               )}
-              <div className="avatar-overlay">📷</div>
+              {isAdmin && <div className="avatar-overlay">📷</div>}
             </div>
             <div className="hero-details">
               <div className="title-row">
                 <h1>Nasya Safira Rahardja</h1>
                 <span className="status-badge">Available</span>
+                {isAdmin && (
+                  <button className="admin-status-btn" onClick={handleLogout} title="Klik untuk keluar admin mode">
+                    Admin Active (Logout)
+                  </button>
+                )}
               </div>
               <p className="role-tag">Digital Marketing Specialist & Multimedia Designer</p>
               <p className="summary">
@@ -339,12 +392,14 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <button className="upload-toggle" onClick={() => setShowUpload(v => !v)}>
-              {showUpload ? 'Close Upload' : 'Drop File'}
-            </button>
+            {isAdmin && (
+              <button className="upload-toggle" onClick={() => setShowUpload(v => !v)}>
+                {showUpload ? 'Close Upload' : 'Drop File'}
+              </button>
+            )}
           </div>
 
-          {showUpload && (
+          {isAdmin && showUpload && (
             <div className="container">
               <UploadZone onUploadComplete={handleUpload} />
             </div>
@@ -356,12 +411,12 @@ export default function App() {
             ) : filtered.length === 0 ? (
               <div className="empty-state">
                 <p>Belum ada karya di filter ini.</p>
-                <button className="upload-toggle" onClick={() => setShowUpload(true)}>Upload sekarang</button>
+                {isAdmin && <button className="upload-toggle" onClick={() => setShowUpload(true)}>Upload sekarang</button>}
               </div>
             ) : (
               <div className="gallery">
                 {filtered.map((item, i) => (
-                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onClick={setLightbox} />
+                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onClick={setLightbox} isAdmin={isAdmin} />
                 ))}
               </div>
             )}
@@ -446,6 +501,23 @@ export default function App() {
       </footer>
 
       <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
+
+      {showPasscodeModal && (
+        <div className="passcode-overlay" onClick={() => { setShowPasscodeModal(false); setPasscodeError(''); setPasscodeInput(''); }}>
+          <form className="passcode-modal" onClick={e => e.stopPropagation()} onSubmit={handlePasscodeSubmit}>
+            <h3>Admin Access</h3>
+            <input
+              type="password"
+              placeholder="Passcode"
+              value={passcodeInput}
+              onChange={e => setPasscodeInput(e.target.value)}
+              autoFocus
+            />
+            {passcodeError && <p className="passcode-error">{passcodeError}</p>}
+            <button type="submit">Enter</button>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
