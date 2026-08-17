@@ -67,6 +67,25 @@ app.delete('/api/files', async (req, res) => {
   }
 });
 
+app.patch('/api/files', async (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (!adminKey || adminKey !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized: Admin key required' });
+  }
+
+  try {
+    const { fileId } = req.query;
+    const { tags } = req.body || {};
+    if (!fileId) return res.status(400).json({ error: 'fileId required' });
+    if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags array required' });
+    
+    const updated = await imagekit.updateFileDetails(fileId, { tags });
+    res.json({ success: true, file: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(3001, () => {
   console.log('Dev API proxy running on http://localhost:3001');
 });

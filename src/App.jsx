@@ -71,18 +71,52 @@ async function loadItems() {
     const res = await fetch(`${API_URL}/files`);
     if (!res.ok) throw new Error('Fetch failed');
     const files = await res.json();
-    return files.map(f => ({
-      id: f.fileId,
-      type: (f.tags && f.tags[0]) || 'design',
-      title: f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
-      url: f.url,
-      isVideo: f.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(f.name),
-      desc: ''
-    }));
+    return files.map(f => {
+      let type = 'design';
+      let title = f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+      let desc = '';
+      
+      if (Array.isArray(f.tags)) {
+        for (const tag of f.tags) {
+          if (['design', 'photo', 'video'].includes(tag)) {
+            type = tag;
+          } else if (tag.startsWith('title:')) {
+            title = tag.slice(6);
+          } else if (tag.startsWith('desc:')) {
+            desc = tag.slice(5);
+          }
+        }
+      }
+
+      return {
+        id: f.fileId,
+        type,
+        title,
+        desc,
+        url: f.url,
+        isVideo: f.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(f.name),
+        rawTags: f.tags || []
+      };
+    });
   } catch (e) {
     console.error(e);
     return [];
   }
+}
+
+async function updateItemData(fileId, updates) {
+  try {
+    const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
+    const res = await fetch(`${API_URL}/files?fileId=${fileId}`, {
+      method: 'PATCH',
+      headers: { 
+        'x-admin-key': passcode,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(updates)
+    });
+    return res.ok;
+  } catch { return false; }
 }
 
 async function deleteItem(fileId) {
@@ -100,6 +134,55 @@ function detectType(file) {
   if (file.type.startsWith('video/')) return 'video';
   if (file.type.startsWith('image/')) return 'photo';
   return 'design';
+}
+
+function buildTags(type, title, desc) {
+  const tags = [type];
+  if (title) tags.push(`title:${title}`);
+  if (desc) tags.push(`desc:${desc}`);
+  return tags;
+}
+
+function EditModal({ item, onSave, onClose }) {
+  const [title, setTitle] = useState(item.title);
+  const [desc, setDesc] = useState(item.desc || '');
+  const [type, setType] = useState(item.type);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    const tags = buildTags(type, title, desc);
+    const ok = await updateItemData(item.id, { tags });
+    if (ok) {
+      onSave({ ...item, title, desc, type });
+    } else {
+      alert('Gagal menyimpan perubahan');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="passcode-overlay" onClick={onClose}>
+      <form className="edit-modal" onClick={e => e.stopPropagation()} onSubmit={handleSubmit}>
+        <h3>Edit Detail</h3>
+        <label>Judul</label>
+        <input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="Judul karya" />
+        <label>Deskripsi</label>
+        <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="Deskripsi singkat..." rows={3} />
+        <label>Kategori</label>
+        <div className="edit-type-row">
+          {['design', 'photo', 'video'].map(t => (
+            <button type="button" key={t} className={`filter-btn ${type === t ? 'active' : ''}`} onClick={() => setType(t)}>{t}</button>
+          ))}
+        </div>
+        <div className="edit-actions">
+          <button type="button" className="edit-cancel" onClick={onClose}>Batal</button>
+          <button type="submit" disabled={saving}>{saving ? 'Menyimpan...' : 'Simpan'}</button>
+        </div>
+      </form>
+    </div>
+  );
 }
 
 function Lightbox({ item, onClose }) {
@@ -144,7 +227,8 @@ function UploadZone({ onUploadComplete }) {
           title: res.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
           url: res.url,
           isVideo: tag === 'video',
-          desc: ''
+          desc: '',
+          rawTags: [tag]
         });
       } catch (err) {
         alert(`Gagal upload ${file.name}: ${err.message}`);
@@ -192,7 +276,7 @@ function UploadZone({ onUploadComplete }) {
   );
 }
 
-function Card({ item, onDelete, onClick, index, isAdmin }) {
+function Card({ item, onDelete, onEdit, onClick, index, isAdmin }) {
   const [deleting, setDeleting] = useState(false);
   return (
     <div className="card" style={{ animationDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
@@ -215,24 +299,38 @@ function Card({ item, onDelete, onClick, index, isAdmin }) {
         <div className="card-info-left">
           <span className="badge">{item.type}</span>
           <h3 className="card-title">{item.title}</h3>
+          {item.desc && <p className="card-desc">{item.desc}</p>}
         </div>
         {isAdmin && (
-          <button
-            className="delete-btn"
-            title="Hapus"
-            disabled={deleting}
-            onClick={async (e) => {
-              e.stopPropagation();
-              setDeleting(true);
-              await onDelete(item.id);
-            }}
-          >
-            {deleting ? '...' : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          <div className="card-admin-actions" onClick={e => e.stopPropagation()}>
+            <button
+              className="action-icon-btn edit-btn"
+              title="Edit Nama & Deskripsi"
+              onClick={() => onEdit(item)}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
               </svg>
-            )}
-          </button>
+            </button>
+            <button
+              className="action-icon-btn delete-btn"
+              title="Hapus"
+              disabled={deleting}
+              onClick={async () => {
+                if (confirm(`Yakin mau hapus "${item.title}"?`)) {
+                  setDeleting(true);
+                  await onDelete(item.id);
+                }
+              }}
+            >
+              {deleting ? '...' : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              )}
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -248,6 +346,7 @@ export default function App() {
   const [filter, setFilter] = useState('all');
   const [tab, setTab] = useState('works');
   const [lightbox, setLightbox] = useState(null);
+  const [editingItem, setEditingItem] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark');
 
@@ -347,6 +446,11 @@ export default function App() {
     else alert('Gagal hapus file dari cloud');
   }, []);
 
+  const handleEditSave = useCallback((updatedItem) => {
+    setItems(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
+    setEditingItem(null);
+  }, []);
+
   const filtered = filter === 'all' ? items : items.filter(i => i.type === filter);
 
   return (
@@ -434,7 +538,7 @@ export default function App() {
             ) : (
               <div className="gallery">
                 {filtered.map((item, i) => (
-                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onClick={setLightbox} isAdmin={isAdmin} />
+                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} />
                 ))}
               </div>
             )}
@@ -519,6 +623,7 @@ export default function App() {
       </footer>
 
       <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
+      {editingItem && <EditModal item={editingItem} onSave={handleEditSave} onClose={() => setEditingItem(null)} />}
 
       {showPasscodeModal && (
         <div className="passcode-overlay" onClick={() => { setShowPasscodeModal(false); setPasscodeError(''); setPasscodeInput(''); }}>
