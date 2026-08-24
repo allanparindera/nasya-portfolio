@@ -39,7 +39,8 @@ async function loadProfilePhoto() {
   try {
     const res = await fetch(`${API_URL}/files`);
     if (!res.ok) return null;
-    const files = await res.json();
+    const text = await res.text();
+    const files = JSON.parse(text);
     const profile = files.find(f => f.tags && f.tags.includes('profile'));
     return profile ? { id: profile.fileId, url: profile.url } : null;
   } catch { return null; }
@@ -70,7 +71,8 @@ async function loadProfile() {
   try {
     const res = await fetch(`${API_URL}/profile`);
     if (!res.ok) return null;
-    return res.json();
+    const text = await res.text();
+    return JSON.parse(text);
   } catch { return null; }
 }
 
@@ -88,7 +90,8 @@ async function loadItems() {
   try {
     const res = await fetch(`${API_URL}/files`);
     if (!res.ok) throw new Error('Fetch failed');
-    const files = await res.json();
+    const text = await res.text();
+    const files = JSON.parse(text);
     return files
       .filter(f => !f.tags || !f.tags.includes('profile'))
       .map(f => {
@@ -679,7 +682,7 @@ export default function App() {
       if (photo) setProfilePhoto(photo);
       if (prof) setProfileData(prof);
       setLoading(false);
-    });
+    }).catch(() => setLoading(false));
   }, []);
 
   // Avatar file selected → open crop modal
