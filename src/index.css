@@ -393,11 +393,11 @@ body {
   grid-column: span 2;
 }
 .card-featured .media-container {
-  aspect-ratio: 21/9;
+  aspect-ratio: 4/5;
 }
 @media (max-width: 768px) {
   .card-featured { grid-column: span 1; }
-  .card-featured .media-container { aspect-ratio: 4/3; }
+  .card-featured .media-container { aspect-ratio: 4/5; }
 }
 
 /* Fix #5: scroll-triggered fade-in */
@@ -443,14 +443,10 @@ body {
 }
 
 .media-container {
-  aspect-ratio: 4/3;
+  aspect-ratio: 4/5;
   overflow: hidden;
   position: relative;
   background: #000;
-}
-
-.card-video .media-container {
-  aspect-ratio: 9/16;
 }
 
 [data-theme="light"] .media-container {
