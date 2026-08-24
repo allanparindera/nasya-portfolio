@@ -382,23 +382,18 @@ body {
 
 /* ─── Gallery ─── */
 .gallery {
-  columns: 3;
-  column-gap: 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.25rem;
   margin-bottom: 4rem;
 }
-@media (max-width: 900px) { .gallery { columns: 2; } }
-@media (max-width: 520px) { .gallery { columns: 1; } }
 
-/* Fix #3: featured first card spans full width */
+/* Fix #3: featured first card spans 2 columns */
 .card-featured {
-  column-span: all;
-}
-.card-featured .media-container {
-  max-height: 500px;
+  grid-column: span 2;
 }
 @media (max-width: 768px) {
-  .card-featured { column-span: none; }
-  .card-featured .media-container { max-height: none; }
+  .card-featured { grid-column: span 1; }
 }
 
 /* Fix #5: scroll-triggered fade-in */
@@ -426,8 +421,7 @@ body {
   background: var(--card);
   border: 1px solid var(--card-border);
   cursor: pointer;
-  break-inside: avoid;
-  margin-bottom: 1.25rem;
+  margin-bottom: 0;
   transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s, box-shadow 0.2s;
 }
 
@@ -446,6 +440,7 @@ body {
 }
 
 .media-container {
+  aspect-ratio: 4/5;
   overflow: hidden;
   position: relative;
   background: #000;
@@ -458,6 +453,8 @@ body {
 .media-container img,
 .media-container video {
   width: 100%;
+  height: 100%;
+  object-fit: cover;
   display: block;
   transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
