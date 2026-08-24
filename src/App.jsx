@@ -729,7 +729,11 @@ export default function App() {
     setEditingItem(null);
   }, []);
 
-  const filtered = filter === 'all' ? items : items.filter(i => i.type === filter);
+  const sorted = [...items].sort((a, b) => {
+    const order = { design: 0, photo: 1, video: 2 };
+    return (order[a.type] ?? 3) - (order[b.type] ?? 3);
+  });
+  const filtered = filter === 'all' ? sorted : sorted.filter(i => i.type === filter);
 
   return (
     <div className="app">
