@@ -79,25 +79,25 @@ body {
 
 /* ─── Hero ─── */
 .hero {
-  padding: 3.5rem 0 0;
+  padding: 4rem 0 0;
   background: var(--hero-gradient);
   border-bottom: 1px solid var(--card-border);
-  margin-bottom: 2rem;
+  margin-bottom: 2.5rem;
   transition: background 0.3s ease;
 }
 
 .hero-top {
   display: flex;
   align-items: flex-start;
-  gap: 2rem;
-  margin-bottom: 2.5rem;
+  gap: 2.25rem;
+  margin-bottom: 2.75rem;
 }
 
 .avatar-wrapper {
   position: relative;
-  width: 80px;
-  height: 80px;
-  border-radius: 18px;
+  width: 96px;
+  height: 96px;
+  border-radius: 22px;
   cursor: pointer;
   flex-shrink: 0;
   overflow: hidden;
@@ -252,8 +252,9 @@ body {
   content: "";
   position: absolute;
   bottom: -1px;
-  left: 1.25rem;
-  right: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 2.5rem);
   height: 2px;
   background: var(--accent);
   border-radius: 2px;
@@ -387,9 +388,27 @@ body {
   margin-bottom: 4rem;
 }
 
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
+/* Fix #3: featured first card spans 2 columns */
+.card-featured {
+  grid-column: span 2;
+}
+.card-featured .media-container {
+  aspect-ratio: 21/9;
+}
+@media (max-width: 768px) {
+  .card-featured { grid-column: span 1; }
+  .card-featured .media-container { aspect-ratio: 4/3; }
+}
+
+/* Fix #5: scroll-triggered fade-in */
+.card-hidden {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.card-visible {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes spin {
@@ -407,7 +426,6 @@ body {
   border: 1px solid var(--card-border);
   cursor: pointer;
   transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s, box-shadow 0.2s;
-  animation: fadeUp 0.45s ease forwards;
 }
 
 .card:hover {
@@ -416,8 +434,12 @@ body {
   border-color: var(--accent-glow);
 }
 
+[data-theme="light"] .card {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+}
+
 [data-theme="light"] .card:hover {
-  box-shadow: 0 12px 32px -8px rgba(0,0,0,0.08);
+  box-shadow: 0 12px 32px -8px rgba(0,0,0,0.1);
 }
 
 .media-container {
@@ -529,6 +551,11 @@ body {
 }
 
 /* ─── About Section ─── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .about-view {
   animation: fadeUp 0.4s ease;
   margin-bottom: 4rem;
@@ -986,4 +1013,126 @@ body {
 .action-icon-btn.delete-btn:hover {
   border-color: #ef4444;
   color: #ef4444;
+}
+
+/* ─── Video Thumbnail ─── */
+.video-thumb-wrap {
+  width: 100%;
+  height: 100%;
+}
+.video-play-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  pointer-events: none;
+}
+
+/* ─── Avatar Crop Modal ─── */
+.crop-modal {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  padding: 2rem;
+  border-radius: 16px;
+  width: 90%;
+  max-width: 380px;
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.5);
+  text-align: center;
+}
+.crop-modal h3 {
+  margin-bottom: 1.25rem;
+  font-weight: 500;
+  font-size: 0.9rem;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+.crop-viewport {
+  position: relative;
+  overflow: hidden;
+  border-radius: 50%;
+  margin: 0 auto 1.25rem;
+  background: #111;
+  touch-action: none;
+}
+.crop-circle-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
+}
+.crop-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding: 0 1rem;
+}
+.crop-controls label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.crop-controls input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+/* ─── Inline Edit ─── */
+.inline-editable {
+  position: relative;
+  cursor: text;
+  border-radius: 6px;
+  transition: background 0.15s;
+  padding: 0.15rem 0.3rem;
+  margin: -0.15rem -0.3rem;
+}
+.inline-editable:hover {
+  background: var(--pill-bg);
+}
+.inline-edit-icon {
+  display: inline-block;
+  margin-left: 0.4rem;
+  font-size: 0.7em;
+  opacity: 0;
+  color: var(--accent);
+  transition: opacity 0.15s;
+  vertical-align: middle;
+}
+.inline-editable:hover .inline-edit-icon {
+  opacity: 0.7;
+}
+.inline-edit-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  resize: vertical;
+  outline: none;
+}
+.inline-edit-input.role-tag { font-size: 1.05rem; }
+.inline-edit-input.summary { font-size: 0.95rem; }
+.inline-placeholder {
+  color: var(--text-secondary);
+  font-style: italic;
+  opacity: 0.5;
 }

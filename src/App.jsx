@@ -12,7 +12,7 @@ async function fetchAuth() {
     headers: { 'x-admin-key': passcode }
   });
   if (!res.ok) throw new Error('Auth failed (wrong passcode or session expired)');
-  return res.json(); // { signature, expire, token }
+  return res.json();
 }
 
 async function uploadToImageKit(file, tag) {
@@ -66,38 +66,59 @@ async function uploadProfilePhoto(file) {
   return res.json();
 }
 
+async function loadProfile() {
+  try {
+    const res = await fetch(`${API_URL}/profile`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+async function saveProfileData(updates) {
+  const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
+  const res = await fetch(`${API_URL}/profile`, {
+    method: 'PATCH',
+    headers: { 'x-admin-key': passcode, 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates)
+  });
+  return res.ok ? res.json() : null;
+}
+
 async function loadItems() {
   try {
     const res = await fetch(`${API_URL}/files`);
     if (!res.ok) throw new Error('Fetch failed');
     const files = await res.json();
-    return files.map(f => {
-      let type = 'design';
-      let title = f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
-      let desc = '';
-      
-      if (Array.isArray(f.tags)) {
-        for (const tag of f.tags) {
-          if (['design', 'photo', 'video'].includes(tag)) {
-            type = tag;
-          } else if (tag.startsWith('title:')) {
-            title = tag.slice(6);
-          } else if (tag.startsWith('desc:')) {
-            desc = tag.slice(5);
+    return files
+      .filter(f => !f.tags || !f.tags.includes('profile'))
+      .map(f => {
+        let type = 'design';
+        let title = f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+        let desc = '';
+        
+        if (Array.isArray(f.tags)) {
+          for (const tag of f.tags) {
+            if (['design', 'photo', 'video'].includes(tag)) {
+              type = tag;
+            } else if (tag.startsWith('title:')) {
+              title = tag.slice(6);
+            } else if (tag.startsWith('desc:')) {
+              desc = tag.slice(5);
+            }
           }
         }
-      }
 
-      return {
-        id: f.fileId,
-        type,
-        title,
-        desc,
-        url: f.url,
-        isVideo: f.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(f.name),
-        rawTags: f.tags || []
-      };
-    });
+        return {
+          id: f.fileId,
+          type,
+          title,
+          desc,
+          url: f.url,
+          thumb: f.thumbnailUrl || null,
+          isVideo: f.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(f.name),
+          rawTags: f.tags || []
+        };
+      });
   } catch (e) {
     console.error(e);
     return [];
@@ -142,6 +163,220 @@ function buildTags(type, title, desc) {
   if (desc) tags.push(`desc:${desc}`);
   return tags;
 }
+
+// ─── Video Thumbnail Generator ───
+function VideoThumb({ src, className }) {
+  const canvasRef = useRef();
+  const [thumb, setThumb] = useState(null);
+
+  useEffect(() => {
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.preload = 'metadata';
+    video.src = src;
+    video.currentTime = 1; // grab frame at 1s
+
+    video.addEventListener('seeked', () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        setThumb(canvas.toDataURL('image/jpeg', 0.8));
+      } catch { /* CORS fallback: no thumb */ }
+    }, { once: true });
+
+    video.addEventListener('error', () => setThumb(null), { once: true });
+  }, [src]);
+
+  if (thumb) {
+    return (
+      <div className={className} style={{ position: 'relative' }}>
+        <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        <div className="video-play-badge">▶</div>
+      </div>
+    );
+  }
+
+  // Fallback: show video with poster attempt
+  return (
+    <div className={className} style={{ position: 'relative' }}>
+      <video src={src} muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      <div className="video-play-badge">▶</div>
+    </div>
+  );
+}
+
+// ─── Avatar Crop Modal ───
+function AvatarCropModal({ file, onSave, onClose }) {
+  const imgRef = useRef();
+  const canvasRef = useRef();
+  const [imgUrl, setImgUrl] = useState(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(1);
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setImgUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  const handlePointerDown = (e) => {
+    setDragging(true);
+    dragStart.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
+    e.target.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e) => {
+    if (!dragging) return;
+    setOffset({
+      x: dragStart.current.ox + (e.clientX - dragStart.current.x),
+      y: dragStart.current.oy + (e.clientY - dragStart.current.y)
+    });
+  };
+
+  const handlePointerUp = () => setDragging(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const img = imgRef.current;
+    const size = 400;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Map viewport coords to image coords
+    const containerSize = 280;
+    const imgScale = scale * Math.max(containerSize / img.naturalWidth, containerSize / img.naturalHeight);
+    const sx = (size / 2 - offset.x * (size / containerSize)) / imgScale - img.naturalWidth / 2 + img.naturalWidth / 2;
+
+    // Simpler approach: draw the image same as preview, then export
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    const drawScale = scale * Math.max(size / img.naturalWidth, size / img.naturalHeight);
+    ctx.scale(drawScale, drawScale);
+    ctx.translate(offset.x * (img.naturalWidth / containerSize) / scale, offset.y * (img.naturalHeight / containerSize) / scale);
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    ctx.restore();
+
+    canvas.toBlob(blob => {
+      if (blob) {
+        const croppedFile = new File([blob], 'profile-photo.jpg', { type: 'image/jpeg' });
+        onSave(croppedFile);
+      }
+      setSaving(false);
+    }, 'image/jpeg', 0.9);
+  };
+
+  const containerSize = 280;
+
+  return (
+    <div className="passcode-overlay" onClick={onClose}>
+      <div className="crop-modal" onClick={e => e.stopPropagation()}>
+        <h3>Crop Foto Profil</h3>
+        <div
+          className="crop-viewport"
+          style={{ width: containerSize, height: containerSize }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        >
+          {imgUrl && (
+            <img
+              ref={imgRef}
+              src={imgUrl}
+              draggable={false}
+              style={{
+                position: 'absolute',
+                left: '50%', top: '50%',
+                transform: `translate(-50%, -50%) translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                minWidth: '100%', minHeight: '100%',
+                objectFit: 'cover',
+                cursor: dragging ? 'grabbing' : 'grab',
+                userSelect: 'none',
+              }}
+            />
+          )}
+          <div className="crop-circle-overlay" />
+        </div>
+        <div className="crop-controls">
+          <label>Zoom</label>
+          <input
+            type="range" min="1" max="3" step="0.05"
+            value={scale}
+            onChange={e => setScale(parseFloat(e.target.value))}
+          />
+        </div>
+        <div className="edit-actions">
+          <button type="button" className="edit-cancel" onClick={onClose}>Batal</button>
+          <button type="button" onClick={handleSave} disabled={saving}>
+            {saving ? 'Menyimpan...' : 'Simpan'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Inline Editable Text ───
+function InlineEdit({ value, onChange, tag: Tag = 'p', className = '', multiline = false, placeholder = '' }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef();
+
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { if (editing && inputRef.current) inputRef.current.focus(); }, [editing]);
+
+  const save = () => {
+    setEditing(false);
+    if (draft !== value) onChange(draft);
+  };
+
+  if (editing) {
+    return multiline ? (
+      <textarea
+        ref={inputRef}
+        className={`inline-edit-input ${className}`}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => { if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
+        rows={3}
+        placeholder={placeholder}
+      />
+    ) : (
+      <input
+        ref={inputRef}
+        className={`inline-edit-input ${className}`}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') { setDraft(value); setEditing(false); }
+        }}
+        placeholder={placeholder}
+      />
+    );
+  }
+
+  return (
+    <Tag
+      className={`inline-editable ${className}`}
+      onClick={() => setEditing(true)}
+      title="Klik untuk edit"
+    >
+      {value || <span className="inline-placeholder">{placeholder}</span>}
+      <span className="inline-edit-icon">✎</span>
+    </Tag>
+  );
+}
+
 
 function EditModal({ item, onSave, onClose }) {
   const [title, setTitle] = useState(item.title);
@@ -226,6 +461,7 @@ function UploadZone({ onUploadComplete }) {
           type: tag,
           title: res.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
           url: res.url,
+          thumb: res.thumbnailUrl || null,
           isVideo: tag === 'video',
           desc: '',
           rawTags: [tag]
@@ -276,24 +512,36 @@ function UploadZone({ onUploadComplete }) {
   );
 }
 
-function Card({ item, onDelete, onEdit, onClick, index, isAdmin }) {
+// ─── IntersectionObserver fade-in hook (fix #5) ───
+function useFadeIn() {
+  const ref = useRef();
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } }, { threshold: 0.1 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+  return [ref, visible];
+}
+
+function Card({ item, onDelete, onEdit, onClick, index, isAdmin, featured }) {
   const [deleting, setDeleting] = useState(false);
+  const [cardRef, visible] = useFadeIn();
   return (
-    <div className="card" style={{ animationDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
+    <div ref={cardRef} className={`card ${featured ? 'card-featured' : ''} ${visible ? 'card-visible' : 'card-hidden'}`} style={{ transitionDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
       <div className="media-container">
         {item.isVideo ? (
-          <video
-            src={item.url}
-            muted loop playsInline
-            onMouseOver={(e) => e.target.play()}
-            onMouseOut={(e) => { e.target.pause(); e.target.currentTime = 0; }}
-          />
+          <VideoThumb src={item.url} className="video-thumb-wrap" />
         ) : (
           <img src={item.url} alt={item.title} loading="lazy" />
         )}
-        <div className="card-overlay">
-          <span className="play-icon">{item.isVideo ? '▶' : '⤢'}</span>
-        </div>
+        {!item.isVideo && (
+          <div className="card-overlay">
+            <span className="play-icon">⤢</span>
+          </div>
+        )}
       </div>
       <div className="card-info">
         <div className="card-info-left">
@@ -340,7 +588,9 @@ function Card({ item, onDelete, onEdit, onClick, index, isAdmin }) {
 export default function App() {
   const [items, setItems] = useState([]);
   const [profilePhoto, setProfilePhoto] = useState(null);
+  const [profileData, setProfileData] = useState(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [cropFile, setCropFile] = useState(null);
   const avatarInputRef = useRef();
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
@@ -359,6 +609,23 @@ export default function App() {
   const tapTimerRef = useRef(null);
 
   const [verifying, setVerifying] = useState(false);
+
+  // Profile data from server
+  const p = profileData || {
+    name: 'Nasya Safira Rahardja',
+    role: 'Digital Marketing Specialist & Multimedia Designer',
+    summary: '4+ years crafting visual identities, packaging systems (BPOM standard), and performance-driven content for pharmaceutical and creative sectors.',
+    location: 'Tangerang',
+    email: 'safiranasya32@gmail.com',
+    linkedin: 'https://linkedin.com/in/nasya-safira-rahardja',
+    phone: '+62 857-1624-8635',
+    status: 'Available'
+  };
+
+  const updateProfile = async (field, value) => {
+    const updated = await saveProfileData({ [field]: value });
+    if (updated) setProfileData(updated);
+  };
 
   const handleAvatarTap = (e) => {
     if (isAdmin) {
@@ -407,21 +674,29 @@ export default function App() {
   };
 
   useEffect(() => {
-    Promise.all([loadItems(), loadProfilePhoto()]).then(([data, photo]) => {
-      // Filter out profile photo from gallery items if any
-      setItems(data.filter(i => i.type !== 'profile'));
+    Promise.all([loadItems(), loadProfilePhoto(), loadProfile()]).then(([data, photo, prof]) => {
+      setItems(data);
       if (photo) setProfilePhoto(photo);
+      if (prof) setProfileData(prof);
       setLoading(false);
     });
   }, []);
 
-  const handleAvatarChange = async (e) => {
+  // Avatar file selected → open crop modal
+  const handleAvatarFileSelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setCropFile(file);
+    e.target.value = ''; // reset so same file can be re-selected
+  };
+
+  // After crop → upload
+  const handleCroppedSave = async (croppedFile) => {
+    setCropFile(null);
     setUploadingAvatar(true);
     try {
       if (profilePhoto?.id) await deleteItem(profilePhoto.id);
-      const res = await uploadProfilePhoto(file);
+      const res = await uploadProfilePhoto(croppedFile);
       setProfilePhoto({ id: res.fileId, url: res.url });
     } catch (err) {
       alert('Gagal ganti foto profil: ' + err.message);
@@ -459,7 +734,7 @@ export default function App() {
         <div className="container">
           <div className="hero-top">
             <div className="avatar-wrapper" onClick={handleAvatarTap} title={isAdmin ? "Ganti foto profil" : undefined} style={{ cursor: 'pointer' }}>
-              <input type="file" ref={avatarInputRef} style={{display:'none'}} accept="image/*" onChange={handleAvatarChange} />
+              <input type="file" ref={avatarInputRef} style={{display:'none'}} accept="image/*" onChange={handleAvatarFileSelect} />
               {uploadingAvatar ? (
                 <div className="avatar"><svg className="spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg></div>
               ) : profilePhoto ? (
@@ -471,31 +746,41 @@ export default function App() {
             </div>
             <div className="hero-details">
               <div className="title-row">
-                <h1>Nasya Safira Rahardja</h1>
-                <span className="status-badge">Available</span>
+                {isAdmin ? (
+                  <InlineEdit value={p.name} onChange={v => updateProfile('name', v)} tag="h1" />
+                ) : (
+                  <h1>{p.name}</h1>
+                )}
+                <span className="status-badge">{p.status || 'Available'}</span>
                 {isAdmin && (
                   <button className="admin-status-btn" onClick={handleLogout} title="Klik untuk keluar admin mode">
                     Admin Active (Logout)
                   </button>
                 )}
               </div>
-              <p className="role-tag">Digital Marketing Specialist & Multimedia Designer</p>
-              <p className="summary">
-                4+ years crafting visual identities, packaging systems (BPOM standard), and performance-driven content for pharmaceutical and creative sectors.
-              </p>
+              {isAdmin ? (
+                <InlineEdit value={p.role} onChange={v => updateProfile('role', v)} tag="p" className="role-tag" placeholder="Role / Jabatan" />
+              ) : (
+                <p className="role-tag">{p.role}</p>
+              )}
+              {isAdmin ? (
+                <InlineEdit value={p.summary} onChange={v => updateProfile('summary', v)} tag="p" className="summary" multiline placeholder="Ringkasan profil..." />
+              ) : (
+                <p className="summary">{p.summary}</p>
+              )}
               <div className="hero-meta">
-                <span className="loc">📍 Tangerang</span>
+                <span className="loc">📍 {p.location}</span>
                 <span className="dot">•</span>
-                <a href="mailto:safiranasya32@gmail.com">safiranasya32@gmail.com</a>
+                <a href={`mailto:${p.email}`}>{p.email}</a>
                 <span className="dot">•</span>
-                <a href="https://linkedin.com/in/nasya-safira-rahardja" target="_blank" rel="noreferrer">LinkedIn</a>
+                <a href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>
                 <span className="dot">•</span>
-                <a href="https://wa.me/6285716248635" target="_blank" rel="noreferrer">+62 857-1624-8635</a>
+                <a href={`https://wa.me/${p.phone.replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer">{p.phone}</a>
               </div>
             </div>
           </div>
           <div className="main-nav">
-            <button className={`nav-tab ${tab === 'works' ? 'active' : ''}`} onClick={() => setTab('works')}>Selected Works</button>
+            <button className={`nav-tab ${tab === 'works' ? 'active' : ''}`} onClick={() => { setTab('works'); setTimeout(() => document.querySelector('.toolbar')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Selected Works</button>
             <button className={`nav-tab ${tab === 'about' ? 'active' : ''}`} onClick={() => setTab('about')}>Experience & Tools</button>
             <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
               {theme === 'dark' ? '☀️' : '🌙'}
@@ -510,8 +795,8 @@ export default function App() {
             <div className="filters">
               {['all', 'design', 'photo', 'video'].map(f => (
                 <button key={f} onClick={() => setFilter(f)} className={`filter-btn ${filter === f ? 'active' : ''}`}>
-                  {f} {f !== 'all' && <span className="count">{items.filter(i => i.type === f).length}</span>}
-                </button>
+                   {f} <span className="count">{f === 'all' ? items.length : items.filter(i => i.type === f).length}</span>
+                 </button>
               ))}
             </div>
             {isAdmin && (
@@ -538,7 +823,7 @@ export default function App() {
             ) : (
               <div className="gallery">
                 {filtered.map((item, i) => (
-                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} />
+                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} featured={i === 0} />
                 ))}
               </div>
             )}
@@ -619,11 +904,12 @@ export default function App() {
       )}
 
       <footer className="container footer">
-        <p>© 2026 Nasya Safira. Built for modern portfolios.</p>
+        <p>© 2026 {p.name?.split(' ')[0] || 'Nasya'} {p.name?.split(' ')[1] || 'Safira'}</p>
       </footer>
 
       <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
       {editingItem && <EditModal item={editingItem} onSave={handleEditSave} onClose={() => setEditingItem(null)} />}
+      {cropFile && <AvatarCropModal file={cropFile} onSave={handleCroppedSave} onClose={() => setCropFile(null)} />}
 
       {showPasscodeModal && (
         <div className="passcode-overlay" onClick={() => { setShowPasscodeModal(false); setPasscodeError(''); setPasscodeInput(''); }}>

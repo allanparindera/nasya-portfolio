@@ -2,10 +2,37 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import ImageKit from 'imagekit';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROFILE_PATH = join(__dirname, 'profile.json');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'nasya2026';
+
+const DEFAULT_PROFILE = {
+  name: 'Nasya Safira Rahardja',
+  role: 'Digital Marketing Specialist & Multimedia Designer',
+  summary: '4+ years crafting visual identities, packaging systems (BPOM standard), and performance-driven content for pharmaceutical and creative sectors.',
+  location: 'Tangerang',
+  email: 'safiranasya32@gmail.com',
+  linkedin: 'https://linkedin.com/in/nasya-safira-rahardja',
+  phone: '+62 857-1624-8635',
+  status: 'Available'
+};
+
+function loadProfile() {
+  try {
+    if (existsSync(PROFILE_PATH)) return JSON.parse(readFileSync(PROFILE_PATH, 'utf8'));
+  } catch {}
+  return { ...DEFAULT_PROFILE };
+}
+
+function saveProfile(data) {
+  writeFileSync(PROFILE_PATH, JSON.stringify(data, null, 2));
+}
 
 const app = express();
 app.use(cors());
@@ -84,6 +111,25 @@ app.patch('/api/files', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Profile text endpoints
+app.get('/api/profile', (req, res) => {
+  res.json(loadProfile());
+});
+
+app.patch('/api/profile', (req, res) => {
+  const adminKey = req.headers['x-admin-key'];
+  if (!adminKey || adminKey !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const current = loadProfile();
+  const allowed = ['name', 'role', 'summary', 'location', 'email', 'linkedin', 'phone', 'status'];
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) current[key] = req.body[key];
+  }
+  saveProfile(current);
+  res.json(current);
 });
 
 app.listen(3001, () => {
