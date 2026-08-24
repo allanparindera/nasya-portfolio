@@ -533,7 +533,7 @@ function Card({ item, onDelete, onEdit, onClick, index, isAdmin, featured }) {
   const [deleting, setDeleting] = useState(false);
   const [cardRef, visible] = useFadeIn();
   return (
-    <div ref={cardRef} className={`card ${featured ? 'card-featured' : ''} ${visible ? 'card-visible' : 'card-hidden'}`} style={{ transitionDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
+    <div ref={cardRef} className={`card ${item.isVideo ? 'card-video' : ''} ${featured ? 'card-featured' : ''} ${visible ? 'card-visible' : 'card-hidden'}`} style={{ transitionDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
       <div className="media-container">
         {item.isVideo ? (
           <VideoThumb src={item.url} className="video-thumb-wrap" />
@@ -826,7 +826,7 @@ export default function App() {
             ) : (
               <div className="gallery">
                 {filtered.map((item, i) => (
-                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} featured={i === 0} />
+                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} featured={i === 0 && !item.isVideo} />
                 ))}
               </div>
             )}

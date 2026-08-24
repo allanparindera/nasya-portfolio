@@ -443,11 +443,14 @@ body {
 }
 
 .media-container {
-  width: 100%;
   aspect-ratio: 4/3;
-  background: #080808;
-  position: relative;
   overflow: hidden;
+  position: relative;
+  background: #000;
+}
+
+.card-video .media-container {
+  aspect-ratio: 9/16;
 }
 
 [data-theme="light"] .media-container {
