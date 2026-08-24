@@ -729,11 +729,7 @@ export default function App() {
     setEditingItem(null);
   }, []);
 
-  const sorted = [...items].sort((a, b) => {
-    const order = { design: 0, photo: 1, video: 2 };
-    return (order[a.type] ?? 3) - (order[b.type] ?? 3);
-  });
-  const filtered = filter === 'all' ? sorted : sorted.filter(i => i.type === filter);
+  const filtered = filter === 'all' ? items : items.filter(i => i.type === filter);
 
   return (
     <div className="app">
@@ -830,7 +826,7 @@ export default function App() {
             ) : (
               <div className="gallery">
                 {filtered.map((item, i) => (
-                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} featured={i === 0 && !item.isVideo} />
+                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} />
                 ))}
               </div>
             )}
