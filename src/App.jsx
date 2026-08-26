@@ -769,47 +769,47 @@ export default function App() {
         </div>
       </header>
 
-      {tab === 'works' ? (
-        <>
-          <div className="container toolbar">
-            <div className="filters">
-              {['all', 'design', 'photo', 'video'].map(f => (
-                <button key={f} onClick={() => setFilter(f)} className={`filter-btn ${filter === f ? 'active' : ''}`}>
-                   {f} <span className="count">{f === 'all' ? items.length : items.filter(i => i.type === f).length}</span>
-                 </button>
+      <div style={{ display: tab === 'works' ? 'block' : 'none' }}>
+        <div className="container toolbar">
+          <div className="filters">
+            {['all', 'design', 'photo', 'video'].map(f => (
+              <button key={f} onClick={() => setFilter(f)} className={`filter-btn ${filter === f ? 'active' : ''}`}>
+                 {f} <span className="count">{f === 'all' ? items.length : items.filter(i => i.type === f).length}</span>
+               </button>
+            ))}
+          </div>
+          {isAdmin && (
+            <button className="upload-toggle" onClick={() => setShowUpload(v => !v)}>
+              {showUpload ? 'Close Upload' : 'Drop File'}
+            </button>
+          )}
+        </div>
+
+        {isAdmin && showUpload && (
+          <div className="container">
+            <UploadZone onUploadComplete={handleUpload} />
+          </div>
+        )}
+
+        <div className="container">
+          {loading ? (
+            <div className="empty-state"><p>Memuat portofolio dari cloud...</p></div>
+          ) : filtered.length === 0 ? (
+            <div className="empty-state">
+              <p>Belum ada karya di filter ini.</p>
+              {isAdmin && <button className="upload-toggle" onClick={() => setShowUpload(true)}>Upload sekarang</button>}
+            </div>
+          ) : (
+            <div className="gallery">
+              {filtered.map((item, i) => (
+                <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} />
               ))}
             </div>
-            {isAdmin && (
-              <button className="upload-toggle" onClick={() => setShowUpload(v => !v)}>
-                {showUpload ? 'Close Upload' : 'Drop File'}
-              </button>
-            )}
-          </div>
-
-          {isAdmin && showUpload && (
-            <div className="container">
-              <UploadZone onUploadComplete={handleUpload} />
-            </div>
           )}
+        </div>
+      </div>
 
-          <div className="container">
-            {loading ? (
-              <div className="empty-state"><p>Memuat portofolio dari cloud...</p></div>
-            ) : filtered.length === 0 ? (
-              <div className="empty-state">
-                <p>Belum ada karya di filter ini.</p>
-                {isAdmin && <button className="upload-toggle" onClick={() => setShowUpload(true)}>Upload sekarang</button>}
-              </div>
-            ) : (
-              <div className="gallery">
-                {filtered.map((item, i) => (
-                  <Card key={item.id} item={item} index={i} onDelete={handleDelete} onEdit={setEditingItem} onClick={setLightbox} isAdmin={isAdmin} />
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      ) : (
+      <div style={{ display: tab === 'about' ? 'block' : 'none' }}>
         <div className="container about-view">
           <div className="about-grid">
             <section className="about-section">
@@ -881,7 +881,7 @@ export default function App() {
             </section>
           </div>
         </div>
-      )}
+      </div>
 
       <footer className="container footer">
         <p>© 2026 {p.name?.split(' ')[0] || 'Nasya'} {p.name?.split(' ')[1] || 'Safira'}</p>
