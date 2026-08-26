@@ -2,38 +2,77 @@ import videoCdnMap from './video-cdn-map.json';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 const THEME_KEY = 'nasya-portfolio-theme';
-const ADMIN_KEY = 'nasya-portfolio-admin';
-const API_URL = import.meta.env.DEV ? 'http://localhost:3001/api' : '/api';
-const IK_URL = import.meta.env.VITE_IMAGEKIT_URL_ENDPOINT;
-const IK_PUB = import.meta.env.VITE_IMAGEKIT_PUBLIC_KEY;
+const ADMIN_KEY = 'nasya-admin-auth';
+const API_URL = '/api';
 
-async function fetchAuth() {
-  const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
-  const res = await fetch(`${API_URL}/auth`, {
-    headers: { 'x-admin-key': passcode }
-  });
-  if (!res.ok) throw new Error('Auth failed (wrong passcode or session expired)');
-  return res.json();
+// ─── Cloudinary Helper (Zero-lag webp responsive image CDN) ───
+function getOptimizedImageUrl(url, width = 600) {
+  if (!url) return url;
+  if (url.includes('ik.imagekit.io')) {
+    const base = url.split('?')[0];
+    return `${base}?tr=w-${width},q-80,f-auto`;
+  }
+  return url;
 }
 
-async function uploadToImageKit(file, tag) {
-  const auth = await fetchAuth();
-  const form = new FormData();
-  form.append('file', file);
-  form.append('fileName', file.name);
-  form.append('folder', '/portfolio');
-  form.append('tags', tag);
-  form.append('publicKey', IK_PUB);
-  form.append('signature', auth.signature);
-  form.append('expire', auth.expire);
-  form.append('token', auth.token);
+// ─── API Helpers ───
+async function checkAuthStatus() {
+  const key = sessionStorage.getItem(ADMIN_KEY);
+  if (!key) return false;
+  try {
+    const res = await fetch(`${API_URL}/auth`, {
+      headers: { 'x-admin-key': key }
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
-  const res = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
-    method: 'POST',
-    body: form,
+async function uploadFile(file, tags, onProgress) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const authRes = await fetch(`${API_URL}/auth`);
+      if (!authRes.ok) throw new Error('Failed to get auth signature');
+      const auth = await authRes.json();
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileName', file.name);
+      formData.append('token', auth.token);
+      formData.append('signature', auth.signature);
+      formData.append('expire', auth.expire);
+      formData.append('publicKey', auth.publicKey);
+      formData.append('folder', '/portfolio');
+      formData.append('tags', tags.join(','));
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'https://upload.imagekit.io/api/v1/files/upload');
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText));
+        } else {
+          reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.responseText}`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error('Network error during upload'));
+      xhr.send(formData);
+    } catch (err) {
+      reject(err);
+    }
   });
-  if (!res.ok) throw new Error('Upload failed');
-  return res.json();
+}
+
+async function uploadProfilePhoto(file) {
+  return uploadFile(file, ['profile'], () => {});
 }
 
 async function loadProfilePhoto() {
@@ -42,49 +81,34 @@ async function loadProfilePhoto() {
     if (!res.ok) return null;
     const text = await res.text();
     const files = JSON.parse(text);
-    const profile = files.find(f => f.tags && f.tags.includes('profile'));
+    const profile = files.find(f => Array.isArray(f.tags) && f.tags.includes('profile'));
     return profile ? { id: profile.fileId, url: profile.url } : null;
-  } catch { return null; }
-}
-
-async function uploadProfilePhoto(file) {
-  const auth = await fetchAuth();
-  const form = new FormData();
-  form.append('file', file);
-  form.append('fileName', 'profile-photo');
-  form.append('folder', '/portfolio');
-  form.append('tags', 'profile');
-  form.append('publicKey', IK_PUB);
-  form.append('signature', auth.signature);
-  form.append('expire', auth.expire);
-  form.append('token', auth.token);
-  form.append('useUniqueFileName', 'true');
-
-  const res = await fetch('https://upload.imagekit.io/api/v1/files/upload', {
-    method: 'POST',
-    body: form,
-  });
-  if (!res.ok) throw new Error('Upload failed');
-  return res.json();
+  } catch {
+    return null;
+  }
 }
 
 async function loadProfile() {
   try {
     const res = await fetch(`${API_URL}/profile`);
     if (!res.ok) return null;
-    const text = await res.text();
-    return JSON.parse(text);
-  } catch { return null; }
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
-async function saveProfileData(updates) {
-  const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
+async function saveProfile(data) {
   const res = await fetch(`${API_URL}/profile`, {
-    method: 'PATCH',
-    headers: { 'x-admin-key': passcode, 'Content-Type': 'application/json' },
-    body: JSON.stringify(updates)
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-key': sessionStorage.getItem(ADMIN_KEY) || ''
+    },
+    body: JSON.stringify(data)
   });
-  return res.ok ? res.json() : null;
+  if (!res.ok) throw new Error('Gagal menyimpan profil');
+  return await res.json();
 }
 
 async function loadItems() {
@@ -133,56 +157,77 @@ async function loadItems() {
   }
 }
 
-async function updateItemData(fileId, updates) {
+async function updateItemData(fileId, updatedData, currentRawTags = []) {
   try {
-    const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
+    const tags = buildTags(updatedData.type, updatedData.title, updatedData.desc);
     const res = await fetch(`${API_URL}/files?fileId=${fileId}`, {
       method: 'PATCH',
-      headers: { 
-        'x-admin-key': passcode,
-        'Content-Type': 'application/json'
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-key': sessionStorage.getItem(ADMIN_KEY) || ''
       },
-      body: JSON.stringify(updates)
+      body: JSON.stringify({ tags })
     });
-    return res.ok;
-  } catch { return false; }
+    if (!res.ok) throw new Error('Update failed');
+    return true;
+  } catch (err) {
+    console.error('Update item failed:', err);
+    return false;
+  }
 }
 
 async function deleteItem(fileId) {
   try {
-    const passcode = sessionStorage.getItem(ADMIN_KEY) || '';
     const res = await fetch(`${API_URL}/files?fileId=${fileId}`, {
       method: 'DELETE',
-      headers: { 'x-admin-key': passcode }
+      headers: {
+        'x-admin-key': sessionStorage.getItem(ADMIN_KEY) || ''
+      }
     });
     return res.ok;
-  } catch { return false; }
-}
-
-function detectType(file) {
-  if (file.type.startsWith('video/')) return 'video';
-  if (file.type.startsWith('image/')) return 'photo';
-  return 'design';
+  } catch {
+    return false;
+  }
 }
 
 function buildTags(type, title, desc) {
   const tags = [type];
-  if (title) tags.push(`title:${title}`);
-  if (desc) tags.push(`desc:${desc}`);
+  if (title) tags.push(`title:${title.trim()}`);
+  if (desc) tags.push(`desc:${desc.trim()}`);
   return tags;
 }
 
-// ─── Video Thumbnail Generator ───
+// ─── Video Thumbnail Generator (Lazy Loaded Intersection Observer) ───
 function VideoThumb({ src, className }) {
+  const containerRef = useRef();
+  const [inView, setInView] = useState(false);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) {
+        setInView(true);
+        obs.disconnect();
+      }
+    }, { rootMargin: '200px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
   return (
-    <div className={className} style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#18181b' }}>
-      <video
-        src={src}
-        muted
-        preload="metadata"
-        playsInline
-        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none' }}
-      />
+    <div ref={containerRef} className={className} style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#09090b' }}>
+      {inView ? (
+        <video
+          src={src}
+          muted
+          preload="metadata"
+          playsInline
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none' }}
+        />
+      ) : (
+        <div style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #18181b 0%, #09090b 100%)' }} />
+      )}
       <div className="video-play-badge">▶</div>
     </div>
   );
@@ -221,81 +266,84 @@ function AvatarCropModal({ file, onSave, onClose }) {
 
   const handlePointerUp = () => setDragging(false);
 
-  const handleSave = async () => {
-    setSaving(true);
+  const handleZoom = (delta) => {
+    setScale(prev => Math.min(3, Math.max(0.5, prev + delta)));
+  };
+
+  const handleCrop = () => {
     const img = imgRef.current;
-    const size = 400;
+    if (!img) return;
+    setSaving(true);
+
     const canvas = document.createElement('canvas');
+    const size = 400;
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d');
 
-    // Map viewport coords to image coords
-    const containerSize = 280;
-    const imgScale = scale * Math.max(containerSize / img.naturalWidth, containerSize / img.naturalHeight);
-    const sx = (size / 2 - offset.x * (size / containerSize)) / imgScale - img.naturalWidth / 2 + img.naturalWidth / 2;
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, size, size);
 
-    // Simpler approach: draw the image same as preview, then export
-    ctx.save();
-    ctx.translate(size / 2, size / 2);
-    const drawScale = scale * Math.max(size / img.naturalWidth, size / img.naturalHeight);
-    ctx.scale(drawScale, drawScale);
-    ctx.translate(offset.x * (img.naturalWidth / containerSize) / scale, offset.y * (img.naturalHeight / containerSize) / scale);
-    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
-    ctx.restore();
+    const naturalAspect = img.naturalWidth / img.naturalHeight;
+    let drawW, drawH;
+    if (naturalAspect >= 1) {
+      drawH = size * scale;
+      drawW = drawH * naturalAspect;
+    } else {
+      drawW = size * scale;
+      drawH = drawW / naturalAspect;
+    }
 
-    canvas.toBlob(blob => {
+    const drawX = (size - drawW) / 2 + offset.x;
+    const drawY = (size - drawH) / 2 + offset.y;
+
+    ctx.drawImage(img, drawX, drawY, drawW, drawH);
+
+    canvas.toBlob((blob) => {
       if (blob) {
-        const croppedFile = new File([blob], 'profile-photo.jpg', { type: 'image/jpeg' });
+        const croppedFile = new File([blob], 'avatar.jpg', { type: 'image/jpeg' });
         onSave(croppedFile);
       }
       setSaving(false);
     }, 'image/jpeg', 0.9);
   };
 
-  const containerSize = 280;
-
   return (
-    <div className="passcode-overlay" onClick={onClose}>
+    <div className="modal-backdrop" onClick={onClose}>
       <div className="crop-modal" onClick={e => e.stopPropagation()}>
-        <h3>Crop Foto Profil</h3>
+        <h3>Sesuaikan Foto Profil</h3>
+        <p className="crop-hint">Geser dan perbesar foto agar pas di dalam lingkaran</p>
         <div
-          className="crop-viewport"
-          style={{ width: containerSize, height: containerSize }}
+          className="crop-container"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          style={{ cursor: dragging ? 'grabbing' : 'grab', touchAction: 'none' }}
         >
           {imgUrl && (
             <img
               ref={imgRef}
               src={imgUrl}
+              alt="Crop target"
+              className="crop-image"
               draggable={false}
               style={{
-                position: 'absolute',
-                left: '50%', top: '50%',
-                transform: `translate(-50%, -50%) translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-                minWidth: '100%', minHeight: '100%',
-                objectFit: 'cover',
-                cursor: dragging ? 'grabbing' : 'grab',
-                userSelect: 'none',
+                transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+                transformOrigin: 'center center'
               }}
             />
           )}
-          <div className="crop-circle-overlay" />
+          <div className="crop-mask-circle" />
         </div>
         <div className="crop-controls">
-          <label>Zoom</label>
-          <input
-            type="range" min="1" max="3" step="0.05"
-            value={scale}
-            onChange={e => setScale(parseFloat(e.target.value))}
-          />
+          <button type="button" onClick={() => handleZoom(-0.1)} className="crop-zoom-btn">−</button>
+          <span className="crop-zoom-label">{Math.round(scale * 100)}%</span>
+          <button type="button" onClick={() => handleZoom(0.1)} className="crop-zoom-btn">+</button>
         </div>
-        <div className="edit-actions">
-          <button type="button" className="edit-cancel" onClick={onClose}>Batal</button>
-          <button type="button" onClick={handleSave} disabled={saving}>
-            {saving ? 'Menyimpan...' : 'Simpan'}
+        <div className="crop-actions">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={saving}>Batal</button>
+          <button type="button" className="btn-primary" onClick={handleCrop} disabled={saving}>
+            {saving ? 'Menyimpan...' : 'Simpan Foto'}
           </button>
         </div>
       </div>
@@ -303,203 +351,248 @@ function AvatarCropModal({ file, onSave, onClose }) {
   );
 }
 
-// ─── Inline Editable Text ───
-function InlineEdit({ value, onChange, tag: Tag = 'p', className = '', multiline = false, placeholder = '' }) {
+// ─── Inline Edit Component for Bio ───
+function EditableBio({ profileData, onSave, isAdmin }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const inputRef = useRef();
+  const [draft, setDraft] = useState({
+    title: profileData.title || '',
+    bio: profileData.bio || ''
+  });
 
-  useEffect(() => { setDraft(value); }, [value]);
-  useEffect(() => { if (editing && inputRef.current) inputRef.current.focus(); }, [editing]);
+  useEffect(() => {
+    setDraft({
+      title: profileData.title || '',
+      bio: profileData.bio || ''
+    });
+  }, [profileData]);
 
-  const save = () => {
-    setEditing(false);
-    if (draft !== value) onChange(draft);
-  };
+  if (!isAdmin) {
+    return (
+      <div className="hero-bio-readonly">
+        <p className="hero-title">{profileData.title || 'Packaging Development Specialist & Graphic Designer'}</p>
+        <p className="hero-desc">{profileData.bio || 'Packaging development specialist with 3+ years in pharmaceutical packaging and graphic design. Focused on compliance, precision, and visual impact.'}</p>
+      </div>
+    );
+  }
 
   if (editing) {
-    return multiline ? (
-      <textarea
-        ref={inputRef}
-        className={`inline-edit-input ${className}`}
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={e => { if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
-        rows={3}
-        placeholder={placeholder}
-      />
-    ) : (
-      <input
-        ref={inputRef}
-        className={`inline-edit-input ${className}`}
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={save}
-        onKeyDown={e => {
-          if (e.key === 'Enter') save();
-          if (e.key === 'Escape') { setDraft(value); setEditing(false); }
-        }}
-        placeholder={placeholder}
-      />
+    return (
+      <div className="editable-bio-form">
+        <input
+          className="bio-input"
+          value={draft.title}
+          onChange={e => setDraft({ ...draft, title: e.target.value })}
+          placeholder="Judul / Role"
+        />
+        <textarea
+          className="bio-textarea"
+          value={draft.bio}
+          onChange={e => setDraft({ ...draft, bio: e.target.value })}
+          placeholder="Deskripsi singkat bio..."
+          rows={3}
+        />
+        <div className="bio-actions">
+          <button className="btn-primary-sm" onClick={async () => {
+            await onSave(draft);
+            setEditing(false);
+          }}>Simpan</button>
+          <button className="btn-secondary-sm" onClick={() => setEditing(false)}>Batal</button>
+        </div>
+      </div>
     );
   }
 
   return (
-    <Tag
-      className={`inline-editable ${className}`}
-      onClick={() => setEditing(true)}
-      title="Klik untuk edit"
-    >
-      {value || <span className="inline-placeholder">{placeholder}</span>}
-      <span className="inline-edit-icon">✎</span>
-    </Tag>
+    <div className="hero-bio-editable" onClick={() => setEditing(true)} title="Klik untuk mengedit bio">
+      <p className="hero-title">{profileData.title || 'Packaging Development Specialist & Graphic Designer'}</p>
+      <p className="hero-desc">{profileData.bio || 'Packaging development specialist with 3+ years in pharmaceutical packaging and graphic design. Focused on compliance, precision, and visual impact.'}</p>
+      <span className="edit-hint-chip">✎ Edit bio</span>
+    </div>
   );
 }
 
-
-function EditModal({ item, onSave, onClose }) {
-  const [title, setTitle] = useState(item.title);
+// ─── Edit Item Modal ───
+function EditItemModal({ item, onSave, onClose }) {
+  const [title, setTitle] = useState(item.title || '');
   const [desc, setDesc] = useState(item.desc || '');
-  const [type, setType] = useState(item.type);
+  const [type, setType] = useState(item.type || 'design');
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-    const tags = buildTags(type, title, desc);
-    const ok = await updateItemData(item.id, { tags });
-    if (ok) {
-      onSave({ ...item, title, desc, type });
-    } else {
-      alert('Gagal menyimpan perubahan');
-    }
+    await onSave(item.id, { title, desc, type });
     setSaving(false);
+    onClose();
   };
 
   return (
-    <div className="passcode-overlay" onClick={onClose}>
-      <form className="edit-modal" onClick={e => e.stopPropagation()} onSubmit={handleSubmit}>
-        <h3>Edit Detail</h3>
-        <label>Judul</label>
-        <input type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="Judul karya" />
-        <label>Deskripsi</label>
-        <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="Deskripsi singkat..." rows={3} />
-        <label>Kategori</label>
-        <div className="edit-type-row">
-          {['design', 'photo', 'video'].map(t => (
-            <button type="button" key={t} className={`filter-btn ${type === t ? 'active' : ''}`} onClick={() => setType(t)}>{t}</button>
-          ))}
-        </div>
-        <div className="edit-actions">
-          <button type="button" className="edit-cancel" onClick={onClose}>Batal</button>
-          <button type="submit" disabled={saving}>{saving ? 'Menyimpan...' : 'Simpan'}</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function Lightbox({ item, onClose }) {
-  if (!item) return null;
-  return (
-    <div className="lightbox-overlay" onClick={onClose}>
-      <button className="lightbox-close" onClick={onClose}>&times;</button>
-      <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-        {item.isVideo ? (
-          <video src={item.url} controls autoPlay className="lightbox-media" />
-        ) : (
-          <img src={item.url} alt={item.title} className="lightbox-media" />
-        )}
-        <div className="lightbox-info">
-          <span className="badge">{item.type}</span>
-          <h3>{item.title}</h3>
-          {item.desc && <p className="lightbox-desc">{item.desc}</p>}
-        </div>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <h3>Edit Karya</h3>
+        <form onSubmit={handleSubmit} className="edit-form">
+          <label>
+            <span>Kategori</span>
+            <select value={type} onChange={e => setType(e.target.value)}>
+              <option value="design">Design</option>
+              <option value="photo">Photo</option>
+              <option value="video">Video</option>
+            </select>
+          </label>
+          <label>
+            <span>Judul</span>
+            <input type="text" value={title} onChange={e => setTitle(e.target.value)} required />
+          </label>
+          <label>
+            <span>Deskripsi</span>
+            <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3} />
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="btn-secondary" onClick={onClose} disabled={saving}>Batal</button>
+            <button type="submit" className="btn-primary" disabled={saving}>
+              {saving ? 'Menyimpan...' : 'Simpan Perubahan'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
 }
 
-function UploadZone({ onUploadComplete }) {
+// ─── Upload Modal ───
+function UploadModal({ onUploadComplete, onClose }) {
+  const [file, setFile] = useState(null);
+  const [type, setType] = useState('design');
+  const [title, setTitle] = useState('');
+  const [desc, setDesc] = useState('');
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState('');
-  const inputRef = useRef();
+  const [progress, setProgress] = useState(0);
 
-  const handleFiles = useCallback(async (files) => {
-    if (!files || files.length === 0) return;
-    setUploading(true);
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const tag = detectType(file);
-      setProgress(`Uploading ${i + 1}/${files.length}: ${file.name}`);
-      try {
-        const res = await uploadToImageKit(file, tag);
-        onUploadComplete({
-          id: res.fileId,
-          type: tag,
-          title: res.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
-          url: res.url,
-          thumb: res.thumbnailUrl || null,
-          isVideo: tag === 'video',
-          desc: '',
-          rawTags: [tag]
-        });
-      } catch (err) {
-        alert(`Gagal upload ${file.name}: ${err.message}`);
-      }
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    if (e.dataTransfer.files?.[0]) {
+      setFile(e.dataTransfer.files[0]);
     }
-    setUploading(false);
-    setProgress('');
-  }, [onUploadComplete]);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const tags = buildTags(type, title, desc);
+      const res = await uploadFile(file, tags, p => setProgress(p));
+      const newItem = {
+        id: res.fileId,
+        type,
+        title: title.trim() || res.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '),
+        desc: desc.trim(),
+        url: res.url,
+        thumb: res.thumbnailUrl || null,
+        isVideo: res.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(res.name),
+        rawTags: tags
+      };
+      onUploadComplete(newItem);
+      onClose();
+    } catch (err) {
+      alert('Upload gagal: ' + err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
-    <div
-      className={`upload-zone ${dragging ? 'dragging' : ''}`}
-      onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
-      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onClick={() => !uploading && inputRef.current.click()}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        accept="image/*,video/*"
-        style={{ display: 'none' }}
-        onChange={(e) => handleFiles(e.target.files)}
-      />
-      <div className="upload-icon">
-        {uploading ? (
-          <svg className="spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
-            <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
-          </svg>
-        ) : (
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="17 8 12 3 7 8" />
-            <line x1="12" y1="3" x2="12" y2="15" />
-          </svg>
-        )}
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <h3>Tambah Karya Baru</h3>
+        <form onSubmit={handleSubmit} className="upload-form">
+          <div
+            className={`dropzone ${dragging ? 'dragging' : ''} ${file ? 'has-file' : ''}`}
+            onDragOver={e => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={handleDrop}
+            onClick={() => document.getElementById('file-input').click()}
+          >
+            <input
+              id="file-input"
+              type="file"
+              accept="image/*,video/*"
+              style={{ display: 'none' }}
+              onChange={e => e.target.files?.[0] && setFile(e.target.files[0])}
+            />
+            {file ? (
+              <div className="file-info">
+                <span className="file-name">{file.name}</span>
+                <span className="file-size">({(file.size / 1024 / 1024).toFixed(2)} MB)</span>
+              </div>
+            ) : (
+              <div className="dropzone-prompt">
+                <span className="upload-icon">↑</span>
+                <p>Klik atau seret file ke sini</p>
+                <small>Mendukung JPG, PNG, WEBP, MP4, MOV</small>
+              </div>
+            )}
+          </div>
+
+          <label>
+            <span>Kategori</span>
+            <select value={type} onChange={e => setType(e.target.value)}>
+              <option value="design">Design</option>
+              <option value="photo">Photo</option>
+              <option value="video">Video</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Judul</span>
+            <input
+              type="text"
+              placeholder="Contoh: Desain Kemasan Flucadex"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+            />
+          </label>
+
+          <label>
+            <span>Deskripsi Singkat</span>
+            <textarea
+              placeholder="Jelaskan konsep, tools yang dipakai, dll..."
+              value={desc}
+              onChange={e => setDesc(e.target.value)}
+              rows={3}
+            />
+          </label>
+
+          {uploading && (
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${progress}%` }} />
+              <span className="progress-text">Mengupload... {progress}%</span>
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button type="button" className="btn-secondary" onClick={onClose} disabled={uploading}>Batal</button>
+            <button type="submit" className="btn-primary" disabled={!file || uploading}>
+              {uploading ? 'Memproses...' : 'Upload Karya'}
+            </button>
+          </div>
+        </form>
       </div>
-      <p className="upload-text">
-        {uploading ? progress : 'Upload portofolio baru (Drop atau klik)'}
-      </p>
-      <p className="upload-hint">Foto, video pendek, karya desain — langsung live di cloud</p>
     </div>
   );
 }
 
-// ─── IntersectionObserver fade-in hook (fix #5) ───
+// ─── IntersectionObserver fade-in hook ───
 function useFadeIn() {
   const ref = useRef();
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } }, { threshold: 0.1 });
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } }, { threshold: 0.05, rootMargin: '100px' });
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
@@ -509,13 +602,19 @@ function useFadeIn() {
 function Card({ item, onDelete, onEdit, onClick, index, isAdmin, featured }) {
   const [deleting, setDeleting] = useState(false);
   const [cardRef, visible] = useFadeIn();
+
   return (
-    <div ref={cardRef} className={`card ${item.isVideo ? 'card-video' : ''} ${featured ? 'card-featured' : ''} ${visible ? 'card-visible' : 'card-hidden'}`} style={{ transitionDelay: `${index * 0.04}s` }} onClick={() => onClick(item)}>
+    <div ref={cardRef} className={`card ${item.isVideo ? 'card-video' : ''} ${featured ? 'card-featured' : ''} ${visible ? 'card-visible' : 'card-hidden'}`} style={{ transitionDelay: `${Math.min(index, 10) * 0.03}s` }} onClick={() => onClick(item)}>
       <div className="media-container">
         {item.isVideo ? (
           <VideoThumb src={item.url} className="video-thumb-wrap" />
         ) : (
-          <img src={item.url} alt={item.title} loading="lazy" />
+          <img
+            src={getOptimizedImageUrl(item.url, 600)}
+            alt={item.title}
+            loading="lazy"
+            decoding="async"
+          />
         )}
         {!item.isVideo && (
           <div className="card-overlay">
@@ -543,20 +642,19 @@ function Card({ item, onDelete, onEdit, onClick, index, isAdmin, featured }) {
             </button>
             <button
               className="action-icon-btn delete-btn"
-              title="Hapus"
+              title="Hapus Karya"
               disabled={deleting}
               onClick={async () => {
-                if (confirm(`Yakin mau hapus "${item.title}"?`)) {
+                if (confirm(`Hapus "${item.title}"?`)) {
                   setDeleting(true);
                   await onDelete(item.id);
                 }
               }}
             >
-              {deleting ? '...' : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              )}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
             </button>
           </div>
         )}
@@ -565,65 +663,66 @@ function Card({ item, onDelete, onEdit, onClick, index, isAdmin, featured }) {
   );
 }
 
+// ─── Main App Component ───
 export default function App() {
   const [items, setItems] = useState([]);
   const [profilePhoto, setProfilePhoto] = useState(null);
-  const [profileData, setProfileData] = useState(null);
+  const [profileData, setProfileData] = useState({
+    name: 'Nasya Safira',
+    title: 'Packaging Development Specialist & Graphic Designer',
+    bio: 'Packaging development specialist with 3+ years in pharmaceutical packaging and graphic design. Focused on compliance, precision, and visual impact.'
+  });
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [cropFile, setCropFile] = useState(null);
   const avatarInputRef = useRef();
+
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
-  const [tab, setTab] = useState('works');
+  const [tab, setTab] = useState('portfolio');
   const [lightbox, setLightbox] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'dark');
 
-  // Admin mode
-  const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem(ADMIN_KEY) === '1');
+  // Admin state
+  const [isAdmin, setIsAdmin] = useState(false);
   const [showPasscodeModal, setShowPasscodeModal] = useState(false);
   const [passcodeInput, setPasscodeInput] = useState('');
   const [passcodeError, setPasscodeError] = useState('');
-  const tapCountRef = useRef(0);
-  const tapTimerRef = useRef(null);
-
   const [verifying, setVerifying] = useState(false);
+  const avatarTapCount = useRef(0);
+  const avatarTapTimer = useRef(null);
 
-  // Profile data from server
-  const p = profileData || {
-    name: 'Nasya Safira Rahardja',
-    role: 'Digital Marketing Specialist & Multimedia Designer',
-    summary: '4+ years crafting visual identities, packaging systems (BPOM standard), and performance-driven content for pharmaceutical and creative sectors.',
-    location: 'Tangerang',
-    email: 'safiranasya32@gmail.com',
-    linkedin: 'https://linkedin.com/in/nasya-safira-rahardja',
-    phone: '+62 857-1624-8635',
-    status: 'Available'
-  };
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
 
-  const updateProfile = async (field, value) => {
-    const updated = await saveProfileData({ [field]: value });
-    if (updated) setProfileData(updated);
-  };
+  // Check auth session
+  useEffect(() => {
+    checkAuthStatus().then(authed => setIsAdmin(authed));
+  }, []);
 
-  const handleAvatarTap = (e) => {
+  const handleAvatarTap = () => {
     if (isAdmin) {
       avatarInputRef.current?.click();
       return;
     }
-    tapCountRef.current += 1;
-    clearTimeout(tapTimerRef.current);
-    tapTimerRef.current = setTimeout(() => { tapCountRef.current = 0; }, 1500);
-    if (tapCountRef.current >= 5) {
-      tapCountRef.current = 0;
+    avatarTapCount.current += 1;
+    if (avatarTapTimer.current) clearTimeout(avatarTapTimer.current);
+
+    if (avatarTapCount.current >= 3) {
+      avatarTapCount.current = 0;
       setShowPasscodeModal(true);
+    } else {
+      avatarTapTimer.current = setTimeout(() => {
+        avatarTapCount.current = 0;
+      }, 1000);
     }
   };
 
   const handlePasscodeSubmit = async (e) => {
     e.preventDefault();
-    if (!passcodeInput) return;
     setVerifying(true);
     setPasscodeError('');
     try {
@@ -633,8 +732,8 @@ export default function App() {
         body: JSON.stringify({ passcode: passcodeInput })
       });
       if (res.ok) {
-        setIsAdmin(true);
         sessionStorage.setItem(ADMIN_KEY, passcodeInput);
+        setIsAdmin(true);
         setShowPasscodeModal(false);
         setPasscodeInput('');
       } else {
@@ -667,7 +766,7 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     setCropFile(file);
-    e.target.value = ''; // reset so same file can be re-selected
+    e.target.value = '';
   };
 
   // After crop → upload
@@ -680,31 +779,44 @@ export default function App() {
       setProfilePhoto({ id: res.fileId, url: res.url });
     } catch (err) {
       alert('Gagal ganti foto profil: ' + err.message);
+    } finally {
+      setUploadingAvatar(false);
     }
-    setUploadingAvatar(false);
   };
 
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+  const handleSaveBio = async (newBioData) => {
+    try {
+      const updated = await saveProfile({
+        ...profileData,
+        ...newBioData
+      });
+      setProfileData(updated);
+    } catch (err) {
+      alert('Gagal menyimpan profil: ' + err.message);
+    }
+  };
 
-  const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
-
-  const handleUpload = useCallback((newItem) => {
-    setItems(prev => [newItem, ...prev]);
-  }, []);
+  const toggleTheme = () => {
+    setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+  };
 
   const handleDelete = useCallback(async (id) => {
     const ok = await deleteItem(id);
     if (ok) setItems(prev => prev.filter(i => i.id !== id));
-    else alert('Gagal hapus file dari cloud');
   }, []);
 
-  const handleEditSave = useCallback((updatedItem) => {
-    setItems(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
+  const handleSaveItem = useCallback(async (id, updatedData) => {
+    const item = items.find(i => i.id === id);
+    const ok = await updateItemData(id, updatedData, item?.rawTags);
+    if (ok) {
+      const updatedItem = {
+        ...item,
+        ...updatedData
+      };
+      setItems(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
+    }
     setEditingItem(null);
-  }, []);
+  }, [items]);
 
   const filtered = filter === 'all' ? items : items.filter(i => i.type === filter);
 
@@ -716,85 +828,94 @@ export default function App() {
             <div className="avatar-wrapper" onClick={handleAvatarTap} title={isAdmin ? "Ganti foto profil" : undefined} style={{ cursor: 'pointer' }}>
               <input type="file" ref={avatarInputRef} style={{display:'none'}} accept="image/*" onChange={handleAvatarFileSelect} />
               {uploadingAvatar ? (
-                <div className="avatar"><svg className="spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg></div>
+                <div className="avatar-placeholder avatar-loading">
+                  <div className="avatar-spinner" />
+                </div>
               ) : profilePhoto ? (
-                <img src={profilePhoto.url} alt="Profile" className="avatar-img" />
+                <img src={getOptimizedImageUrl(profilePhoto.url, 240)} alt={profileData.name} className="avatar-img" />
               ) : (
-                <div className="avatar">NS</div>
+                <div className="avatar-placeholder">
+                  <span>NS</span>
+                </div>
               )}
-              {isAdmin && <div className="avatar-overlay">📷</div>}
+              {isAdmin && <div className="avatar-edit-overlay"><span>📷</span></div>}
             </div>
-            <div className="hero-details">
-              <div className="title-row">
-                {isAdmin ? (
-                  <InlineEdit value={p.name} onChange={v => updateProfile('name', v)} tag="h1" />
-                ) : (
-                  <h1>{p.name}</h1>
-                )}
-                <span className="status-badge">{p.status || 'Available'}</span>
+
+            <div className="hero-info">
+              <div className="name-row">
+                <h1 className="name">{profileData.name || 'Nasya Safira'}</h1>
+                <div className="theme-toggle-wrap">
+                  {isAdmin && (
+                    <button className="admin-status-badge" onClick={handleLogout} title="Klik untuk keluar dari mode admin">
+                      Admin Mode (Keluar)
+                    </button>
+                  )}
+                  <button className="theme-toggle" onClick={toggleTheme} title="Ganti Tema">
+                    {theme === 'dark' ? '☀️' : '🌙'}
+                  </button>
+                </div>
+              </div>
+
+              <EditableBio profileData={profileData} onSave={handleSaveBio} isAdmin={isAdmin} />
+
+              <div className="hero-actions">
+                <a href="#contact" className="btn-primary-sm" onClick={e => { e.preventDefault(); setTab('about'); }}>
+                  Tentang Saya
+                </a>
+                <a href="mailto:nasyasafira23@gmail.com" className="btn-secondary-sm">
+                  Hubungi
+                </a>
                 {isAdmin && (
-                  <button className="admin-status-btn" onClick={handleLogout} title="Klik untuk keluar admin mode">
-                    Admin Active (Logout)
+                  <button className="btn-primary-sm btn-upload-hero" onClick={() => setShowUpload(true)}>
+                    + Upload Karya
                   </button>
                 )}
               </div>
-              {isAdmin ? (
-                <InlineEdit value={p.role} onChange={v => updateProfile('role', v)} tag="p" className="role-tag" placeholder="Role / Jabatan" />
-              ) : (
-                <p className="role-tag">{p.role}</p>
-              )}
-              {isAdmin ? (
-                <InlineEdit value={p.summary} onChange={v => updateProfile('summary', v)} tag="p" className="summary" multiline placeholder="Ringkasan profil..." />
-              ) : (
-                <p className="summary">{p.summary}</p>
-              )}
-              <div className="hero-meta">
-                <span className="loc">📍 {p.location}</span>
-                <span className="dot">•</span>
-                <a href={`mailto:${p.email}`}>{p.email}</a>
-                <span className="dot">•</span>
-                <a href={p.linkedin} target="_blank" rel="noreferrer">LinkedIn</a>
-                <span className="dot">•</span>
-                <a href={`https://wa.me/${p.phone.replace(/[^0-9]/g, '')}`} target="_blank" rel="noreferrer">{p.phone}</a>
-              </div>
             </div>
-          </div>
-          <div className="main-nav">
-            <button className={`nav-tab ${tab === 'works' ? 'active' : ''}`} onClick={() => { setTab('works'); setTimeout(() => document.querySelector('.toolbar')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); }}>Selected Works</button>
-            <button className={`nav-tab ${tab === 'about' ? 'active' : ''}`} onClick={() => setTab('about')}>Experience & Tools</button>
-            <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
-              {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
           </div>
         </div>
       </header>
 
-      {tab === 'works' ? (
-        <>
-          <div className="container toolbar">
-            <div className="filters">
-              {['all', 'design', 'photo', 'video'].map(f => (
-                <button key={f} onClick={() => setFilter(f)} className={`filter-btn ${filter === f ? 'active' : ''}`}>
-                   {f} <span className="count">{f === 'all' ? items.length : items.filter(i => i.type === f).length}</span>
-                 </button>
-              ))}
-            </div>
-            {isAdmin && (
-              <button className="upload-toggle" onClick={() => setShowUpload(v => !v)}>
-                {showUpload ? 'Close Upload' : 'Drop File'}
-              </button>
-            )}
+      {/* Tabs */}
+      <nav className="nav-tabs">
+        <div className="container tab-container">
+          <div className="tabs-list">
+            <button
+              className={`tab-btn ${tab === 'portfolio' ? 'active' : ''}`}
+              onClick={() => setTab('portfolio')}
+            >
+              Portofolio
+            </button>
+            <button
+              className={`tab-btn ${tab === 'about' ? 'active' : ''}`}
+              onClick={() => setTab('about')}
+            >
+              Tentang & Pengalaman
+            </button>
           </div>
 
-          {isAdmin && showUpload && (
-            <div className="container">
-              <UploadZone onUploadComplete={handleUpload} />
+          {tab === 'portfolio' && (
+            <div className="filter-chips">
+              {['all', 'design', 'photo', 'video'].map(f => (
+                <button
+                  key={f}
+                  className={`filter-chip ${filter === f ? 'active' : ''}`}
+                  onClick={() => setFilter(f)}
+                >
+                  {f === 'all' ? 'Semua' : f.charAt(0).toUpperCase() + f.slice(1)}
+                </button>
+              ))}
             </div>
           )}
+        </div>
+      </nav>
 
+      {/* Main Content */}
+      <main className="main-content">
+        {tab === 'portfolio' ? (
           <div className="container">
             {loading ? (
-              <div className="empty-state"><p>Memuat portofolio dari cloud...</p></div>
+              <div className="empty-state"><p>Memuat portofolio...</p></div>
             ) : filtered.length === 0 ? (
               <div className="empty-state">
                 <p>Belum ada karya di filter ini.</p>
@@ -808,105 +929,148 @@ export default function App() {
               </div>
             )}
           </div>
-        </>
-      ) : (
-        <div className="container about-view">
-          <div className="about-grid">
-            <section className="about-section">
-              <h2>Experience</h2>
-              <div className="timeline">
-                <div className="timeline-item">
-                  <div className="item-header">
-                    <h3>Digital Marketing & Content Creator</h3>
-                    <span className="time">Jun 2025 – Present</span>
+        ) : (
+          <div className="container about-view">
+            <div className="about-grid">
+              <section className="about-section">
+                <h2>Experience</h2>
+                <div className="timeline">
+                  <div className="timeline-item">
+                    <div className="item-header">
+                      <h3>Digital Marketing & Content Creator</h3>
+                      <span className="time">Jun 2025 – Present</span>
+                    </div>
+                    <p className="company">PT. Samco Farma</p>
+                    <ul>
+                      <li>Integrated digital marketing strategies across Instagram, TikTok, LinkedIn & website.</li>
+                      <li>Produces 20+ monthly branded visual & video assets using Adobe Suite & CapCut.</li>
+                      <li>Campaign performance optimization via Meta Business Suite & TikTok Analytics.</li>
+                    </ul>
                   </div>
-                  <p className="company">PT. Samco Farma</p>
-                  <ul>
-                    <li>Integrated digital marketing strategies across Instagram, TikTok, LinkedIn & website.</li>
-                    <li>Produces 20+ monthly branded visual & video assets using Adobe Suite & CapCut.</li>
-                    <li>Campaign performance optimization via Meta Business Suite & TikTok Analytics.</li>
-                  </ul>
-                </div>
-                <div className="timeline-item">
-                  <div className="item-header">
-                    <h3>Packaging Development Specialist</h3>
-                    <span className="time">Jul 2022 – Jun 2025</span>
+                  <div className="timeline-item">
+                    <div className="item-header">
+                      <h3>Packaging Development Specialist</h3>
+                      <span className="time">Jul 2022 – Jun 2025</span>
+                    </div>
+                    <p className="company">PT. Samco Farma</p>
+                    <ul>
+                      <li>Lead packaging compliance & design verification with BPOM regulatory standards.</li>
+                      <li>Collaborated with QA, QC, and external printing vendors for mass production quality.</li>
+                      <li>Standardized 50+ SKU packaging artworks ensuring zero print-run defects.</li>
+                    </ul>
                   </div>
-                  <p className="company">PT. Samco Farma</p>
-                  <ul>
-                    <li>Led end-to-end packaging design for 30+ pharmaceutical SKUs with BPOM standard compliance.</li>
-                    <li>Cut design-to-print turnaround time by 25% via cross-functional workflow streamlining.</li>
-                  </ul>
                 </div>
-                <div className="timeline-item">
-                  <div className="item-header">
-                    <h3>Social Media Design Intern</h3>
-                    <span className="time">Jun 2018 – Sep 2019</span>
-                  </div>
-                  <p className="company">About TNG</p>
-                  <ul>
-                    <li>Created 100+ social media assets for viral community growth and event collaterals.</li>
-                  </ul>
-                </div>
-              </div>
-            </section>
+              </section>
 
-            <section className="about-sidebar">
-              <div className="side-card">
-                <h2>Stack</h2>
-                <div className="skill-group">
-                  <span className="group-title">Creative</span>
-                  <div className="tags">
-                    <span>Photoshop</span><span>Illustrator</span><span>Premiere Pro</span><span>CapCut</span><span>Figma</span>
+              <section className="about-section">
+                <h2>Skills & Tools</h2>
+                <div className="skills-group">
+                  <h4>Design & Creative</h4>
+                  <div className="skill-tags">
+                    <span>Adobe Illustrator</span>
+                    <span>Adobe Photoshop</span>
+                    <span>CorelDraw</span>
+                    <span>Figma</span>
+                    <span>CapCut</span>
                   </div>
                 </div>
-                <div className="skill-group">
-                  <span className="group-title">Marketing</span>
-                  <div className="tags">
-                    <span>Content Strategy</span><span>Meta Suite</span><span>TikTok Ads</span><span>BPOM Standard</span>
+                <div className="skills-group">
+                  <h4>Packaging & Compliance</h4>
+                  <div className="skill-tags">
+                    <span>BPOM Regulation</span>
+                    <span>Pre-press & Print Quality</span>
+                    <span>Color Management</span>
+                    <span>Barcode & NIE Specs</span>
                   </div>
                 </div>
-              </div>
-              <div className="side-card">
-                <h2>Education</h2>
-                <div className="edu-item">
-                  <h4>M.Kom — Business Intelligence</h4>
-                  <p className="school">Universitas Raharja (2024 - 2026)</p>
-                </div>
-                <div className="edu-item">
-                  <h4>S.Kom — Multimedia & Broadcasting</h4>
-                  <p className="school">Universitas Raharja (2019 - 2023)</p>
-                </div>
-              </div>
-            </section>
+              </section>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Footer */}
+      <footer className="footer" id="contact">
+        <div className="container footer-content">
+          <p>© {new Date().getFullYear()} Nasya Safira. All rights reserved.</p>
+          <div className="footer-links">
+            <a href="mailto:nasyasafira23@gmail.com">Email</a>
+            <a href="https://linkedin.com" target="_blank" rel="noreferrer">LinkedIn</a>
+          </div>
+        </div>
+      </footer>
+
+      {/* Lightbox Modal */}
+      {lightbox && (
+        <div className="lightbox-backdrop" onClick={() => setLightbox(null)}>
+          <div className="lightbox-content" onClick={e => e.stopPropagation()}>
+            <button className="lightbox-close" onClick={() => setLightbox(null)}>✕</button>
+            <div className="lightbox-media-wrap">
+              {lightbox.isVideo ? (
+                <video src={lightbox.url} controls autoPlay className="lightbox-media" />
+              ) : (
+                <img src={lightbox.url} alt={lightbox.title} className="lightbox-media" />
+              )}
+            </div>
+            <div className="lightbox-info">
+              <span className="badge">{lightbox.type}</span>
+              <h3>{lightbox.title}</h3>
+              {lightbox.desc && <p>{lightbox.desc}</p>}
+            </div>
           </div>
         </div>
       )}
 
-      <footer className="container footer">
-        <p>© 2026 {p.name?.split(' ')[0] || 'Nasya'} {p.name?.split(' ')[1] || 'Safira'}</p>
-      </footer>
+      {/* Upload Modal */}
+      {showUpload && (
+        <UploadModal
+          onClose={() => setShowUpload(false)}
+          onUploadComplete={(newItem) => setItems(prev => [newItem, ...prev])}
+        />
+      )}
 
-      <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
-      {editingItem && <EditModal item={editingItem} onSave={handleEditSave} onClose={() => setEditingItem(null)} />}
-      {cropFile && <AvatarCropModal file={cropFile} onSave={handleCroppedSave} onClose={() => setCropFile(null)} />}
+      {/* Edit Modal */}
+      {editingItem && (
+        <EditItemModal
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onSave={handleSaveItem}
+        />
+      )}
 
+      {/* Crop Avatar Modal */}
+      {cropFile && (
+        <AvatarCropModal
+          file={cropFile}
+          onClose={() => setCropFile(null)}
+          onSave={handleCroppedSave}
+        />
+      )}
+
+      {/* Passcode Modal */}
       {showPasscodeModal && (
-        <div className="passcode-overlay" onClick={() => { setShowPasscodeModal(false); setPasscodeError(''); setPasscodeInput(''); }}>
-          <form className="passcode-modal" onClick={e => e.stopPropagation()} onSubmit={handlePasscodeSubmit}>
-            <h3>Admin Access</h3>
-            <input
-              type="password"
-              placeholder="Passcode"
-              value={passcodeInput}
-              onChange={e => setPasscodeInput(e.target.value)}
-              autoFocus
-            />
-            {passcodeError && <p className="passcode-error">{passcodeError}</p>}
-            <button type="submit" disabled={verifying}>
-              {verifying ? '...' : 'Enter'}
-            </button>
-          </form>
+        <div className="modal-backdrop" onClick={() => setShowPasscodeModal(false)}>
+          <div className="modal-content passcode-modal" onClick={e => e.stopPropagation()}>
+            <h3>Masuk Mode Admin</h3>
+            <p className="modal-desc">Masukkan passcode untuk mengelola karya dan bio.</p>
+            <form onSubmit={handlePasscodeSubmit}>
+              <input
+                type="password"
+                placeholder="Passcode..."
+                value={passcodeInput}
+                onChange={e => setPasscodeInput(e.target.value)}
+                autoFocus
+                className="passcode-input"
+              />
+              {passcodeError && <p className="error-text">{passcodeError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="btn-secondary" onClick={() => setShowPasscodeModal(false)}>Batal</button>
+                <button type="submit" className="btn-primary" disabled={verifying}>
+                  {verifying ? 'Memeriksa...' : 'Masuk'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>
