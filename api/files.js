@@ -1,4 +1,6 @@
 import ImageKit from 'imagekit';
+import fs from 'fs';
+import path from 'path';
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'nasya2026';
 
@@ -7,6 +9,17 @@ const imagekit = new ImageKit({
   privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
   urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
 });
+
+// CDN mapping for video files on GitHub Releases
+let cdnMapping = {};
+try {
+  const mapPath = path.join(process.cwd(), 'src', 'video-cdn-map.json');
+  if (fs.existsSync(mapPath)) {
+    cdnMapping = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+  }
+} catch (e) {
+  console.error('Error loading video CDN map:', e);
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,7 +33,19 @@ export default async function handler(req, res) {
         path: '/portfolio',
         sort: 'DESC_CREATED'
       });
-      return res.status(200).json(files);
+
+      const mappedFiles = files.map(file => {
+        if (cdnMapping[file.fileId]) {
+          return {
+            ...file,
+            url: cdnMapping[file.fileId].cdn_url,
+            isCdn: true
+          };
+        }
+        return file;
+      });
+
+      return res.status(200).json(mappedFiles);
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }

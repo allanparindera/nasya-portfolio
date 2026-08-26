@@ -1,3 +1,4 @@
+import videoCdnMap from './video-cdn-map.json';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 const THEME_KEY = 'nasya-portfolio-theme';
@@ -111,14 +112,18 @@ async function loadItems() {
           }
         }
 
+        const cdnEntry = videoCdnMap[f.fileId];
+        const isVideo = f.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(f.name);
+        const resolvedUrl = (cdnEntry && cdnEntry.cdn_url) ? cdnEntry.cdn_url : f.url;
+
         return {
           id: f.fileId,
           type,
           title,
           desc,
-          url: f.url,
+          url: resolvedUrl,
           thumb: f.thumbnailUrl || null,
-          isVideo: f.fileType === 'non-image' || /\.(mp4|mov|webm)$/i.test(f.name),
+          isVideo,
           rawTags: f.tags || []
         };
       });
@@ -169,43 +174,15 @@ function buildTags(type, title, desc) {
 
 // ─── Video Thumbnail Generator ───
 function VideoThumb({ src, className }) {
-  const canvasRef = useRef();
-  const [thumb, setThumb] = useState(null);
-
-  useEffect(() => {
-    const video = document.createElement('video');
-    video.crossOrigin = 'anonymous';
-    video.muted = true;
-    video.preload = 'metadata';
-    video.src = src;
-    video.currentTime = 1; // grab frame at 1s
-
-    video.addEventListener('seeked', () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-        setThumb(canvas.toDataURL('image/jpeg', 0.8));
-      } catch { /* CORS fallback: no thumb */ }
-    }, { once: true });
-
-    video.addEventListener('error', () => setThumb(null), { once: true });
-  }, [src]);
-
-  if (thumb) {
-    return (
-      <div className={className} style={{ position: 'relative' }}>
-        <img src={thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-        <div className="video-play-badge">▶</div>
-      </div>
-    );
-  }
-
-  // Fallback: show video with poster attempt
   return (
-    <div className={className} style={{ position: 'relative' }}>
-      <video src={src} muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    <div className={className} style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#18181b' }}>
+      <video
+        src={src}
+        muted
+        preload="metadata"
+        playsInline
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', pointerEvents: 'none' }}
+      />
       <div className="video-play-badge">▶</div>
     </div>
   );
